@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/BarutSRB/OmniWM
+// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
 
 import ApplicationServices
 @testable import OmniWM
@@ -864,6 +864,9 @@ final class RuntimeArchitectureTests: XCTestCase {
             .rightMouseDown,
             .rightMouseDragged,
             .rightMouseUp,
+            .otherMouseDown,
+            .otherMouseDragged,
+            .otherMouseUp,
             .scrollWheel
         ] {
             let bit: CGEventMask = 1 << type.rawValue

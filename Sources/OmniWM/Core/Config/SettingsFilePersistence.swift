@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/BarutSRB/OmniWM
+// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
 
 import Foundation
 
@@ -217,6 +217,10 @@ final class SettingsFilePersistence {
     ) -> SettingsFileLoadOutcome {
         do {
             let result = try SettingsTOMLCodec.decodeForLoad(contents.data)
+            try OverviewInputSettingsValidation.validate(
+                mouseButton: result.export.overview.mouseButton,
+                hyperTrigger: result.export.systemHyperTrigger
+            )
             try GestureSettingsValidation.validate(result.export, monitorProvider: monitorProvider)
             guard let migration = result.migration else {
                 writeBlockNotice = nil
@@ -299,7 +303,9 @@ final class SettingsFilePersistence {
         report("Ignoring invalid settings at \(fileURL.path): \(reason)")
         return SettingsFileLoadOutcome(export: nil, notice: .invalidRejected(reason: reason))
     }
+}
 
+extension SettingsFilePersistence {
     func handlePossibleSettingsFileChange() {
         let observedFingerprint = SettingsFileAccess.currentFingerprint(at: fileURL)
         observation.refresh(for: observedFingerprint)

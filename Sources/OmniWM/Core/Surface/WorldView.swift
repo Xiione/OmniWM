@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/BarutSRB/OmniWM
+// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
 
 import CoreGraphics
 import Foundation
@@ -139,6 +139,7 @@ struct WorldView {
                     originalToken: record.originalToken,
                     currentToken: record.currentToken,
                     workspaceId: record.workspaceId,
+                    windowTitle: entry?.managedReplacementMetadata?.title ?? "",
                     frame: .zero,
                     displayContext: nil,
                     selected: workspaceManager.selectedManagedToken == record.currentToken

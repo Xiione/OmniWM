@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/BarutSRB/OmniWM
+// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
 
 import AppKit
 import Foundation
@@ -59,6 +59,7 @@ final class MouseEventHandler {
         clearNativeTitleBarDrag()
         cancelActiveMouseInteraction()
         state.capturedInteractionButton = nil
+        state.capturedOverviewButton = nil
         tearDownEventTaps()
         let retiringMultitouchSource = multitouchSource
         if retiringMultitouchSource?.shutdown() != false {
@@ -205,14 +206,17 @@ final class MouseEventHandler {
         case .mouseMoved:
             performanceCounters?.mouseMovedEvents &+= 1
         case .leftMouseDragged,
-             .rightMouseDragged:
+             .rightMouseDragged,
+             .otherMouseDragged:
             performanceCounters?.mouseDraggedEvents &+= 1
         case .scrollWheel:
             performanceCounters?.scrollEvents &+= 1
         case .leftMouseDown,
              .leftMouseUp,
              .rightMouseDown,
-             .rightMouseUp:
+             .rightMouseUp,
+             .otherMouseDown,
+             .otherMouseUp:
             performanceCounters?.buttonEvents &+= 1
         default:
             break

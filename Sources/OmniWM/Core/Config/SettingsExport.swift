@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/BarutSRB/OmniWM
+// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
 
 import Foundation
 import OmniWMIPC
@@ -154,6 +154,10 @@ struct SettingsExport: Equatable {
         var zoom: Double
         var backdrop: SettingsColor
         var windowBorders: OverviewWindowBorders
+        var matchFocusBorder: Bool?
+        var invertScrollDirection: Bool?
+        var mouseScrollSpeed: Double?
+        var mouseButton: Int64?
     }
 
     struct OverviewWindowBorders: Codable, Equatable {
@@ -357,12 +361,15 @@ extension SettingsExport.Overview {
     static func defaults() -> Self {
         Self(
             zoom: 1.0,
-            backdrop: SettingsColor(red: 0.05, green: 0.05, blue: 0.08, alpha: 1.0),
+            backdrop: SettingsColor(red: 0.05, green: 0.05, blue: 0.08, alpha: 0),
             windowBorders: SettingsExport.OverviewWindowBorders(
                 normal: SettingsColor(red: 0.3, green: 0.3, blue: 0.35, alpha: 0.5),
                 hovered: SettingsColor(red: 0.4, green: 0.6, blue: 1.0, alpha: 1.0),
                 selected: SettingsColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1.0)
-            )
+            ),
+            matchFocusBorder: true,
+            invertScrollDirection: false,
+            mouseScrollSpeed: 1.0
         )
     }
 }
