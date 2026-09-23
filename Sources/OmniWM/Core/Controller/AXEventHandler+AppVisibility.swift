@@ -5,12 +5,6 @@ import Foundation
 
 @MainActor
 extension AXEventHandler {
-    func handleWindowMiniaturized(pid: pid_t, windowId: Int) {
-        controller?.workspaceManager.clearExternalFocusIdentity(
-            matching: WindowToken(pid: pid, windowId: windowId)
-        )
-    }
-
     func handleAppDeactivated(pid: pid_t) {
         guard let controller else { return }
         let workspaceManager = controller.workspaceManager
@@ -73,6 +67,16 @@ extension AXEventHandler {
             controller: controller
         )
         controller.surfaceReconciler.noteWorldChanged()
+    }
+
+    func handleNativeAppUnhide(pid: pid_t) {
+        guard let controller else { return }
+        let shouldFollowActivation = controller.workspaceManager.isAppHidden(pid: pid)
+            && controller.intentLedger.openAppRevealFocusIntent(pid: pid) == nil
+        handleAppUnhidden(pid: pid, source: .service)
+        if shouldFollowActivation {
+            handleAppActivation(pid: pid, source: .workspaceDidUnhideApplication)
+        }
     }
 
     func handleAppUnhidden(pid: pid_t, source: WMEventSource = .ax) {

@@ -86,10 +86,13 @@ final class WindowActionHandler {
     }
 
     func toggleOverview() {
+        controller?.layoutRefreshController.workspaceSwipe.cancel(reason: "overview")
         overviewController.toggle()
     }
 
     func openOverview() {
+        controller?.layoutRefreshController.workspaceSwipe.cancel(reason: "overview")
+        overviewController.input.beginGestureScrollSuppression()
         overviewController.open()
     }
 
@@ -110,11 +113,16 @@ final class WindowActionHandler {
     }
 
     func beginOverviewGesture() -> Bool {
-        overviewController.beginInteractiveTransition()
+        controller?.layoutRefreshController.workspaceSwipe.cancel(reason: "overview")
+        return overviewController.beginInteractiveTransition()
     }
 
-    func updateOverviewGesture(cumulativeUnits: Double, timestamp: TimeInterval) {
-        overviewControllerStorage?.updateInteractiveTransition(cumulativeUnits: cumulativeUnits, timestamp: timestamp)
+    func updateOverviewGesture(
+        cumulativeUnits: Double, timestamp: TimeInterval, recognitionMovement: SwipeEvent? = nil
+    ) {
+        overviewControllerStorage?.updateInteractiveTransition(
+            cumulativeUnits: cumulativeUnits, timestamp: timestamp, recognitionMovement: recognitionMovement
+        )
     }
 
     func endOverviewGesture(timestamp: TimeInterval?) {
