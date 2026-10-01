@@ -11,6 +11,10 @@ final class CommandHandler {
     var nativeFullscreenSetter: ((AXWindowRef, Bool) -> Bool)?
     var frontmostAppPidProvider: (() -> pid_t?)?
     var frontmostFocusedWindowTokenProvider: (() -> WindowToken?)?
+    var requestWindowMarkName: () -> String? = { CommandPaletteMarkNamePrompt.requestName() }
+    var chooseWindowMarkNameToRemove: ([String]) -> String? = {
+        CommandPaletteMarkRemovalPrompt.requestName(from: $0)
+    }
 
     init(controller: WMController) {
         self.controller = controller
@@ -41,18 +45,22 @@ final class CommandHandler {
             return .ignoredOverview
         }
 
-        let layoutType = currentLayoutType()
-
-        switch (command.layoutCompatibility, layoutType) {
-        case (.niri, .dwindle),
-             (.dwindle, .niri),
-             (.dwindle, .defaultLayout):
+        guard Self.isLayoutCompatible(command.layoutCompatibility, with: currentLayoutType()) else {
             return .ignoredLayoutMismatch
-        default:
-            break
         }
 
         return performAllowedCommand(command, controller: controller)
+    }
+
+    static func isLayoutCompatible(_ compatibility: LayoutCompatibility, with layoutType: LayoutType) -> Bool {
+        switch (compatibility, layoutType) {
+        case (.niri, .dwindle),
+             (.dwindle, .niri),
+             (.dwindle, .defaultLayout):
+            false
+        default:
+            true
+        }
     }
 
     private func performAllowedCommand(_ command: HotkeyCommand, controller: WMController) -> ExternalCommandResult {
@@ -96,6 +104,8 @@ final class CommandHandler {
             return perform(action, controller: controller)
         case .openMenuAnywhere:
             controller.openMenuAnywhere()
+        case let .windowMark(action):
+            return perform(action, controller: controller)
         case let .presentation(action):
             return perform(action, controller: controller)
         }
@@ -270,28 +280,6 @@ final class CommandHandler {
         }
     }
 
-    func toggleColumnTabbedInNiri() {
-        guard let controller else { return }
-        controller.niriLayoutHandler.withNiriWorkspaceContext { engine, wsId, motion, state, _, _, _, orientation in
-            if engine.toggleColumnTabbed(
-                in: wsId,
-                state: state,
-                motion: motion,
-                orientation: orientation
-            ) {
-                controller.workspaceManager.recordReconcileEvent(
-                    .layoutOperationPerformed(workspaceId: wsId, operation: .displayModeChanged, source: .command)
-                )
-                controller.layoutRefreshController.requestLayoutCommandRelayout(
-                    affectedWorkspaceIds: [wsId]
-                )
-                if engine.hasAnyWindowAnimationsRunning(in: wsId) {
-                    controller.layoutRefreshController.startScrollAnimation(for: wsId)
-                }
-            }
-        }
-    }
-
     private func currentLayoutType() -> LayoutType {
         guard let controller else { return .niri }
         guard let ws = controller.activeWorkspace() else { return .niri }
@@ -334,5 +322,52 @@ final class CommandHandler {
             }
         }
         return true
+    }
+}
+
+extension CommandHandler {
+    private func perform(_ action: WindowMarkHotkeyAction, controller: WMController) -> ExternalCommandResult {
+        let token = controller.workspaceManager.nativeManagedFocusToken
+        let expectedHandle = token.flatMap { controller.workspaceManager.handle(for: $0) }
+        let interaction = CommandPaletteMarkInteraction(
+            selectedWindowToken: token,
+            isEligibleWindow: { token in
+                guard let expectedHandle,
+                      let entry = controller.workspaceManager.entry(for: token),
+                      entry.layoutReason == .standard,
+                      controller.workspaceManager.handle(for: token) === expectedHandle
+                else {
+                    return false
+                }
+                return true
+            },
+            requestName: requestWindowMarkName,
+            chooseRemovalName: chooseWindowMarkNameToRemove,
+            namesForWindow: { controller.windowMarkRegistry.names(for: $0) },
+            lookupMark: { controller.windowMarkRegistry.lookup($0) },
+            setMark: { token, name in controller.windowMarkRegistry.set(name, for: token) },
+            removeMark: { controller.windowMarkRegistry.remove($0) }
+        )
+        let outcome = switch action {
+        case .set:
+            interaction.setSelectedWindowMark()
+        case .remove:
+            interaction.removeMarkFromSelectedWindow(token)
+        }
+        return switch outcome {
+        case .marked,
+             .alreadyMarked,
+             .removed:
+            .executed
+        case .cancelled,
+             .noMarks:
+            .noChange
+        case .duplicateName,
+             .invalidName,
+             .staleWindow,
+             .noSelectedWindow,
+             .staleMark:
+            .windowActionFailed
+        }
     }
 }

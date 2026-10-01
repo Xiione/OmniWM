@@ -54,6 +54,10 @@ final class AXManager {
         parkLedger.pendingParkWindowIds
     }
 
+    var pendingParkWindowIdsAwaitingSkyLightMove: Set<Int> {
+        parkLedger.pendingParkWindowIds.filter { skyLightLivePositionByWindowId[$0] == nil }
+    }
+
     func prepareParkFrameApplications(_ frames: [AXFrameApplicationTarget]) -> [AXFrameApplicationRequest] {
         parkLedger.prepareParkFrameApplications(frames, currentFrame: frameLedger.lastAppliedFrame)
     }
@@ -300,7 +304,14 @@ final class AXManager {
         }
     }
 
-    func cleanup() {
+    func prepareForStopRestoration() {
+        cancelAllPendingFrameState()
+        for context in AppAXContextRegistry.contexts.values {
+            context.prepareForStopRestoration()
+        }
+    }
+
+    func cleanup(completion: (@MainActor @Sendable () -> Void)? = nil) {
         if let observer = appTerminationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             appTerminationObserver = nil
@@ -316,7 +327,7 @@ final class AXManager {
         managedWindowBindings.shutdown()
         frameBatchBuffer.clear()
 
-        AppAXContextRegistry.shutdownAll()
+        AppAXContextRegistry.shutdownAll(completion: completion)
     }
 
     func excludeFrameWriteForNativeTitleBarDrag(pid: pid_t, windowId: Int) -> Bool {

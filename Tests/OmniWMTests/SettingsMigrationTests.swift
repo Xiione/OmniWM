@@ -54,7 +54,7 @@ final class SettingsMigrationTests: XCTestCase {
             let export = result.export
 
             XCTAssertEqual(migration.fromVersion, 0, testCase.name)
-            XCTAssertEqual(migration.toVersion, 3, testCase.name)
+            XCTAssertEqual(migration.toVersion, 4, testCase.name)
             XCTAssertEqual(Set(migration.defaultedPaths), testCase.defaultedPaths, testCase.name)
             XCTAssertEqual(Set(migration.addedHotkeyIDs), expectedAddedHotkeyIDs, testCase.name)
             XCTAssertEqual(
@@ -131,7 +131,7 @@ final class SettingsMigrationTests: XCTestCase {
                 testCase.name
             )
             let migratedText = String(decoding: migratedData, as: UTF8.self)
-            XCTAssertTrue(migratedText.contains("schemaVersion = 3"), testCase.name)
+            XCTAssertTrue(migratedText.contains("schemaVersion = 4"), testCase.name)
             let unknownPaths = Set(SettingsTOMLCodec.unknownKeyPaths(in: migratedData))
             XCTAssertTrue(unknownPaths.contains("general.futureSetting"), testCase.name)
             XCTAssertTrue(unknownPaths.contains("futureExtension"), testCase.name)
@@ -159,7 +159,7 @@ final class SettingsMigrationTests: XCTestCase {
         let arrangement = try XCTUnwrap(result.export.routing.arrangements.only)
 
         XCTAssertEqual(report.fromVersion, 2)
-        XCTAssertEqual(report.toVersion, 3)
+        XCTAssertEqual(report.toVersion, 4)
         XCTAssertEqual(report.defaultedPaths, ["routing.arrangements"])
         XCTAssertTrue(report.addedHotkeyIDs.isEmpty)
         XCTAssertTrue(report.mappedHotkeys.isEmpty)
@@ -246,9 +246,78 @@ final class SettingsMigrationTests: XCTestCase {
 
         XCTAssertTrue(result.export.routing.arrangements.isEmpty)
         XCTAssertEqual(result.migration?.fromVersion, 2)
-        XCTAssertEqual(result.migration?.toVersion, 3)
+        XCTAssertEqual(result.migration?.toVersion, 4)
         XCTAssertEqual(result.migration?.defaultedPaths, ["routing.arrangements"])
         XCTAssertEqual(result.export.routing.mode, .custom)
+    }
+
+    func testVersionThreeMigrationAddsWindowMarkHotkeysUnassigned() throws {
+        var data = try SettingsTOMLCodec.encode(.defaults())
+        data = try removingHotkey(id: "setWindowMark", from: data)
+        data = try removingHotkey(id: "removeWindowMark", from: data)
+        data = Data(String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "schemaVersion = 4", with: "schemaVersion = 3").utf8)
+
+        let result = try SettingsTOMLCodec.decodeForLoad(data)
+        let migration = try XCTUnwrap(result.migration)
+
+        XCTAssertEqual(migration.fromVersion, 3)
+        XCTAssertEqual(migration.toVersion, 4)
+        XCTAssertEqual(Set(migration.addedHotkeyIDs), expectedVersionFourHotkeyIDs)
+        XCTAssertTrue(try XCTUnwrap(hotkey("setWindowMark", in: result.export)).binding.isUnassigned)
+        XCTAssertTrue(try XCTUnwrap(hotkey("removeWindowMark", in: result.export)).binding.isUnassigned)
+    }
+
+    @MainActor
+    func testVersionThreeStartupPreservesBindingsAndBacksUpExactBytes() throws {
+        let fixture = try makeFixture("version-three-window-marks")
+        defer { fixture.remove() }
+
+        var export = SettingsExport.defaults()
+        let focusBinding = KeyBinding(keyCode: UInt32(kVK_ANSI_J), modifiers: UInt32(optionKey))
+        let focusIndex = try XCTUnwrap(export.hotkeyBindings.firstIndex { $0.id == "focus.left" })
+        export.hotkeyBindings[focusIndex] = HotkeyBinding(
+            id: "focus.left", command: .focus(.left), binding: focusBinding
+        )
+
+        var original = try SettingsTOMLCodec.encode(export)
+        original = try removingHotkey(id: "setWindowMark", from: original)
+        original = try removingHotkey(id: "removeWindowMark", from: original)
+        original = Data(String(decoding: original, as: UTF8.self)
+            .replacingOccurrences(of: "schemaVersion = 4", with: "schemaVersion = 3").utf8)
+        try original.write(to: settingsURL(in: fixture))
+
+        let first = makePersistence(in: fixture).loadOutcome()
+        let migrated = try XCTUnwrap(first.export)
+        guard let notice = first.notice, case let .migrated(report, backupURL) = notice else {
+            return XCTFail("Expected version-three migration notice")
+        }
+
+        XCTAssertEqual(report.fromVersion, 3)
+        XCTAssertEqual(report.toVersion, 4)
+        XCTAssertEqual(Set(report.addedHotkeyIDs), expectedVersionFourHotkeyIDs)
+        XCTAssertEqual(backupURL, migrationBackupURL(in: fixture))
+        XCTAssertEqual(try Data(contentsOf: backupURL), original)
+        XCTAssertEqual(
+            migrated.hotkeyBindings.filter { !expectedVersionFourHotkeyIDs.contains($0.id) },
+            export.hotkeyBindings.filter { !expectedVersionFourHotkeyIDs.contains($0.id) }
+        )
+        XCTAssertEqual(try XCTUnwrap(hotkey("focus.left", in: migrated)).binding, .chord(focusBinding))
+        XCTAssertTrue(try XCTUnwrap(hotkey("setWindowMark", in: migrated)).binding.isUnassigned)
+        XCTAssertTrue(try XCTUnwrap(hotkey("removeWindowMark", in: migrated)).binding.isUnassigned)
+
+        let rewritten = try Data(contentsOf: settingsURL(in: fixture))
+        let rewrittenInode = try fileInode(at: settingsURL(in: fixture))
+        XCTAssertEqual(try SettingsTOMLCodec.decode(rewritten), migrated)
+        XCTAssertTrue(String(decoding: rewritten, as: UTF8.self).contains("schemaVersion = 4"))
+
+        let second = makePersistence(in: fixture).loadOutcome()
+        XCTAssertNil(second.notice)
+        XCTAssertEqual(second.export, migrated)
+        XCTAssertEqual(try Data(contentsOf: settingsURL(in: fixture)), rewritten)
+        XCTAssertEqual(try fileInode(at: settingsURL(in: fixture)), rewrittenInode)
+        XCTAssertEqual(try Data(contentsOf: backupURL), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: migrationBackupURL(in: fixture, index: 1).path))
     }
 
     @MainActor
@@ -339,7 +408,7 @@ final class SettingsMigrationTests: XCTestCase {
             return XCTFail("Expected routing migration")
         }
         XCTAssertEqual(report.fromVersion, 2)
-        XCTAssertEqual(report.toVersion, 3)
+        XCTAssertEqual(report.toVersion, 4)
         XCTAssertEqual(backupURL, migrationBackupURL(in: fixture))
         XCTAssertEqual(try Data(contentsOf: backupURL), data)
         let rewritten = try Data(contentsOf: settingsURL(in: fixture))
@@ -388,15 +457,18 @@ final class SettingsMigrationTests: XCTestCase {
         )
     }
 
-    func testVersionOneFixtureMigratesExactlyNineteenBindingsAndPreservesCustomDataByID() throws {
+    func testVersionOneFixtureAddsCurrentBindingsAndPreservesCustomDataByID() throws {
         let result = try SettingsTOMLCodec.decodeForLoad(legacyFixtureData(named: "v0.6.4-custom"))
         let migration = try XCTUnwrap(result.migration)
         let migratedData = try XCTUnwrap(result.migratedData)
 
         XCTAssertEqual(migration.fromVersion, 1)
-        XCTAssertEqual(migration.toVersion, 3)
-        XCTAssertEqual(migration.addedHotkeyIDs.count, 19)
-        XCTAssertEqual(Set(migration.addedHotkeyIDs), expectedVersionTwoHotkeyIDs)
+        XCTAssertEqual(migration.toVersion, 4)
+        XCTAssertEqual(migration.addedHotkeyIDs.count, 21)
+        XCTAssertEqual(
+            Set(migration.addedHotkeyIDs),
+            expectedVersionTwoHotkeyIDs.union(expectedVersionFourHotkeyIDs)
+        )
         XCTAssertEqual(migration.defaultedPaths, ["routing.arrangements"])
         XCTAssertTrue(migration.mappedHotkeys.isEmpty)
         XCTAssertTrue(migration.retiredHotkeys.isEmpty)
@@ -464,10 +536,11 @@ final class SettingsMigrationTests: XCTestCase {
         let migration = try XCTUnwrap(result.migration)
 
         XCTAssertEqual(migration.fromVersion, 1)
-        XCTAssertEqual(migration.addedHotkeyIDs.count, 18)
+        XCTAssertEqual(migration.addedHotkeyIDs.count, 20)
         XCTAssertEqual(
             Set(migration.addedHotkeyIDs),
             expectedVersionTwoHotkeyIDs.subtracting(["closeFocusedWindow"])
+                .union(expectedVersionFourHotkeyIDs)
         )
         XCTAssertEqual(
             hotkey("closeFocusedWindow", in: result.export)?.binding.humanReadableString,
@@ -543,14 +616,14 @@ final class SettingsMigrationTests: XCTestCase {
 
     func testCurrentSchemaIsEncodedAndFutureSchemaIsRejectedExplicitly() throws {
         let canonical = String(decoding: try SettingsTOMLCodec.encode(.defaults()), as: UTF8.self)
-        XCTAssertTrue(canonical.contains("schemaVersion = 3"))
-        let future = canonical.replacingOccurrences(of: "schemaVersion = 3", with: "schemaVersion = 4")
+        XCTAssertTrue(canonical.contains("schemaVersion = 4"))
+        let future = canonical.replacingOccurrences(of: "schemaVersion = 4", with: "schemaVersion = 5")
         XCTAssertNotEqual(future, canonical)
 
         XCTAssertThrowsError(try SettingsTOMLCodec.decodeForLoad(Data(future.utf8))) { error in
             XCTAssertEqual(
                 error as? SettingsTOMLCodecError,
-                .unsupportedSchemaVersion(found: 4, supported: 3)
+                .unsupportedSchemaVersion(found: 5, supported: 4)
             )
         }
     }
@@ -640,7 +713,7 @@ final class SettingsMigrationTests: XCTestCase {
     }
 
     @MainActor
-    func testStartupMigrationBacksUpExactBytesAndRewritesCanonicalVersionThree() throws {
+    func testStartupMigrationBacksUpExactBytesAndRewritesCanonicalVersionFour() throws {
         for name in ["v0.6.2-custom", "v0.6.3-custom"] {
             let fixture = try makeFixture(name)
             defer { fixture.remove() }
@@ -662,7 +735,7 @@ final class SettingsMigrationTests: XCTestCase {
             let rewritten = try Data(contentsOf: settingsURL(in: fixture))
             XCTAssertNotEqual(rewritten, original, name)
             XCTAssertEqual(try SettingsTOMLCodec.decode(rewritten), export, name)
-            XCTAssertTrue(String(decoding: rewritten, as: UTF8.self).contains("schemaVersion = 3"), name)
+            XCTAssertTrue(String(decoding: rewritten, as: UTF8.self).contains("schemaVersion = 4"), name)
             let unknownPaths = Set(SettingsTOMLCodec.unknownKeyPaths(in: rewritten))
             XCTAssertTrue(unknownPaths.contains("general.futureSetting"), name)
             XCTAssertTrue(unknownPaths.contains("futureExtension"), name)
@@ -672,7 +745,7 @@ final class SettingsMigrationTests: XCTestCase {
     }
 
     @MainActor
-    func testVersionOneStartupUsesPreVersionThreeBackupAndLeavesHistoricalBackupUntouched() throws {
+    func testVersionOneStartupUsesPreVersionFourBackupAndLeavesHistoricalBackupUntouched() throws {
         let fixture = try makeFixture("version-one-startup")
         defer { fixture.remove() }
         let original = try legacyFixtureData(named: "v0.6.4-custom")
@@ -698,14 +771,14 @@ final class SettingsMigrationTests: XCTestCase {
         }
 
         XCTAssertEqual(report.fromVersion, 1)
-        XCTAssertEqual(report.toVersion, 3)
+        XCTAssertEqual(report.toVersion, 4)
         XCTAssertEqual(backupURL, migrationBackupURL(in: fixture))
         XCTAssertEqual(try Data(contentsOf: backupURL), original)
         XCTAssertEqual(try Data(contentsOf: historicalBackupURL), historicalBackup)
         let rewritten = try Data(contentsOf: settingsURL(in: fixture))
         let rewrittenInode = try fileInode(at: settingsURL(in: fixture))
         XCTAssertEqual(try SettingsTOMLCodec.decode(rewritten), export)
-        XCTAssertTrue(String(decoding: rewritten, as: UTF8.self).contains("schemaVersion = 3"))
+        XCTAssertTrue(String(decoding: rewritten, as: UTF8.self).contains("schemaVersion = 4"))
         XCTAssertTrue(
             try hotkeySection(id: "swapSplit", in: rewritten).contains("futureHotkeySetting = \"keep-by-id\"")
         )
@@ -742,7 +815,7 @@ final class SettingsMigrationTests: XCTestCase {
         }
 
         XCTAssertEqual(report.fromVersion, 1)
-        XCTAssertEqual(report.toVersion, 3)
+        XCTAssertEqual(report.toVersion, 4)
         XCTAssertEqual(backupURL, migrationBackupURL(in: fixture))
         XCTAssertEqual(try Data(contentsOf: backupURL), original)
         XCTAssertEqual(
@@ -993,7 +1066,7 @@ final class SettingsMigrationTests: XCTestCase {
             }
             XCTAssertEqual(report.fromVersion, 0)
             XCTAssertNil(backupURL)
-            XCTAssertTrue(reason.contains("Both pre-version-3 settings backup slots are occupied"))
+            XCTAssertTrue(reason.contains("Both pre-version-4 settings backup slots are occupied"))
             XCTAssertTrue(persistence.settingsWritesBlocked)
             XCTAssertEqual(try Data(contentsOf: settingsURL(in: fixture)), original)
             XCTAssertThrowsError(try persistence.saveImmediately(export)) { error in
@@ -1012,7 +1085,7 @@ final class SettingsMigrationTests: XCTestCase {
         let fixture = try makeFixture("future")
         defer { fixture.remove() }
         let canonical = String(decoding: try SettingsTOMLCodec.encode(.defaults()), as: UTF8.self)
-        let future = Data(canonical.replacingOccurrences(of: "schemaVersion = 3", with: "schemaVersion = 4").utf8)
+        let future = Data(canonical.replacingOccurrences(of: "schemaVersion = 4", with: "schemaVersion = 5").utf8)
         try future.write(to: settingsURL(in: fixture))
         let persistence = makePersistence(in: fixture)
 
@@ -1023,8 +1096,8 @@ final class SettingsMigrationTests: XCTestCase {
             return XCTFail("Expected unsupported version notice")
         }
 
-        XCTAssertEqual(found, 4)
-        XCTAssertEqual(supported, 3)
+        XCTAssertEqual(found, 5)
+        XCTAssertEqual(supported, 4)
         XCTAssertEqual(outcome.export, SettingsExport.defaults())
         XCTAssertTrue(persistence.settingsWritesBlocked)
         XCTAssertEqual(try Data(contentsOf: settingsURL(in: fixture)), future)
@@ -1054,8 +1127,8 @@ final class SettingsMigrationTests: XCTestCase {
         XCTAssertEqual(noticeChanges, 0)
         let canonical = String(decoding: try Data(contentsOf: settingsURL(in: fixture)), as: UTF8.self)
         let future = Data(canonical.replacingOccurrences(
-            of: "schemaVersion = 3",
-            with: "schemaVersion = 4"
+            of: "schemaVersion = 4",
+            with: "schemaVersion = 5"
         ).utf8)
         try future.write(to: settingsURL(in: fixture), options: .atomic)
 
@@ -1066,8 +1139,8 @@ final class SettingsMigrationTests: XCTestCase {
         else {
             return XCTFail("Expected unsupported-version save notice")
         }
-        XCTAssertEqual(found, 4)
-        XCTAssertEqual(supported, 3)
+        XCTAssertEqual(found, 5)
+        XCTAssertEqual(supported, 4)
         XCTAssertTrue(settings.settingsWritesBlocked)
         XCTAssertEqual(noticeChanges, 1)
         XCTAssertEqual(try Data(contentsOf: settingsURL(in: fixture)), future)
@@ -1103,7 +1176,7 @@ final class SettingsMigrationTests: XCTestCase {
         }
         XCTAssertEqual(report.fromVersion, 0)
         XCTAssertNil(backupURL)
-        XCTAssertTrue(reason.contains("Both pre-version-3 settings backup slots are occupied"))
+        XCTAssertTrue(reason.contains("Both pre-version-4 settings backup slots are occupied"))
         XCTAssertTrue(settings.settingsWritesBlocked)
         XCTAssertEqual(noticeChanges, 1)
         XCTAssertEqual(try Data(contentsOf: settingsURL(in: fixture)), legacy)
@@ -1149,8 +1222,8 @@ final class SettingsMigrationTests: XCTestCase {
             noticeChanges += 1
         }
         let future = Data(canonical.replacingOccurrences(
-            of: "schemaVersion = 3",
-            with: "schemaVersion = 4"
+            of: "schemaVersion = 4",
+            with: "schemaVersion = 5"
         ).utf8)
 
         try future.write(to: settingsURL(in: fixture), options: .atomic)
@@ -1225,7 +1298,7 @@ final class SettingsMigrationTests: XCTestCase {
         XCTAssertEqual(backupURL, migrationBackupURL(in: fixture))
         XCTAssertEqual(try Data(contentsOf: backupURL), original)
         let targetData = try Data(contentsOf: targetURL)
-        XCTAssertTrue(String(decoding: targetData, as: UTF8.self).contains("schemaVersion = 3"))
+        XCTAssertTrue(String(decoding: targetData, as: UTF8.self).contains("schemaVersion = 4"))
         XCTAssertEqual(try SettingsTOMLCodec.decode(targetData), try XCTUnwrap(outcome.export))
         XCTAssertNotEqual(try fileInode(at: targetURL), originalTargetInode)
         let attributes = try FileManager.default.attributesOfItem(atPath: targetURL.path)
@@ -1236,7 +1309,13 @@ final class SettingsMigrationTests: XCTestCase {
     private var expectedAddedHotkeyIDs: Set<String> {
         Set((2 ... 10).flatMap { index in
             ["toggleScratchpad.\(index)", "assignFocusedWindowToScratchpad.\(index)"]
-        }).union(expectedVersionTwoHotkeyIDs)
+        })
+        .union(expectedVersionTwoHotkeyIDs)
+        .union(expectedVersionFourHotkeyIDs)
+    }
+
+    private var expectedVersionFourHotkeyIDs: Set<String> {
+        SettingsTOMLMigration.hotkeyIDsAddedInVersionFour
     }
 
     private var expectedVersionTwoHotkeyIDs: Set<String> {
@@ -1315,7 +1394,7 @@ final class SettingsMigrationTests: XCTestCase {
         export.routing.mode = .custom
         export.gaps.size = 27
         let canonical = String(decoding: try SettingsTOMLCodec.encode(export), as: UTF8.self)
-            .replacingOccurrences(of: "schemaVersion = 3", with: "schemaVersion = 2")
+            .replacingOccurrences(of: "schemaVersion = 4", with: "schemaVersion = 2")
             .replacingOccurrences(of: "arrangements = []\n", with: "")
         if routingRows.isEmpty {
             return Data(("monitorRoutingOverrides = []\n" + canonical).utf8)
@@ -1392,7 +1471,7 @@ final class SettingsMigrationTests: XCTestCase {
 
     private func migrationBackupURL(in fixture: Fixture, index: Int = 0) -> URL {
         fixture.configDirectory.appendingPathComponent(
-            SettingsFilePersistence.migrationBackupFileNames(for: 3)[index],
+            SettingsFilePersistence.migrationBackupFileNames(for: 4)[index],
             isDirectory: false
         )
     }

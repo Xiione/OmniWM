@@ -182,7 +182,8 @@ final class WorkspaceSwipePresentation {
     func release(timestamp: TimeInterval, allowFlick: Bool) -> Bool {
         guard let flight, !flight.committing else { return false }
         guard flight.motion.release(
-            timestamp: timestamp, allowFlick: allowFlick, animationTime: mediaTimeProvider()
+            timestamp: timestamp, allowFlick: allowFlick, animationTime: mediaTimeProvider(),
+            motion: controller?.motionPolicy.snapshot() ?? .enabled
         ) else {
             cancel(reason: "invalid-release")
             return true
@@ -214,7 +215,10 @@ final class WorkspaceSwipePresentation {
         guard flight == nil else { return }
         preparation = nil
         preview?.stop()
-        if warm { warmPreviews() }
+        if warm {
+            refreshController?.collectUnusedWorkspacesIfIdle()
+            warmPreviews()
+        }
     }
 
     func cancel(reason: String) {
@@ -232,7 +236,10 @@ final class WorkspaceSwipePresentation {
         trace(reason, progress: flight.progress)
         controller?.surfaceReconciler.noteWorldChanged()
         refreshController?.stopDisplayLinkIfIdle(for: flight.preparation.monitor.displayId)
-        if reason == "completed" || reason == "placement-failed" || reason == "cancelled" { warmPreviews() }
+        if reason == "completed" || reason == "placement-failed" || reason == "cancelled" {
+            refreshController?.collectUnusedWorkspacesIfIdle()
+            warmPreviews()
+        }
     }
 
     func checkSettlement() {
@@ -287,6 +294,10 @@ final class WorkspaceSwipePresentation {
 }
 
 extension WorkspaceSwipePresentation {
+    func windowRemoved(_ token: WindowToken) {
+        preview?.remove(token: token)
+    }
+
     func previewSurface(_ controller: WMController) -> WorkspaceSwipePreview {
         if let preview { return preview }
         let preview = WorkspaceSwipePreview(ownedWindowRegistry: controller.ownedWindowRegistry)

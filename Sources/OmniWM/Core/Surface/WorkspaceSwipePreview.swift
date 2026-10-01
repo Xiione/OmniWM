@@ -69,7 +69,11 @@ final class WorkspaceSwipePreview {
         ownedWindowRegistry: OwnedWindowRegistry,
         previewCapture: OverviewThumbnailCapture? = nil,
         backdrop: WorkspaceSwipeBackdrop = WorkspaceSwipeBackdrop(),
-        hasCaptureAccess: @escaping @MainActor () -> Bool = { CGPreflightScreenCaptureAccess() }
+        hasCaptureAccess: @escaping @MainActor () -> Bool = {
+            MainThreadAXSpanTrace.measure(.screenCapturePreflight) {
+                CGPreflightScreenCaptureAccess()
+            } succeeded: { $0 }
+        }
     ) {
         self.ownedWindowRegistry = ownedWindowRegistry
         self.hasCaptureAccess = hasCaptureAccess
@@ -77,6 +81,7 @@ final class WorkspaceSwipePreview {
         capture = previewCapture ?? OverviewThumbnailCapture(
             environment: OverviewEnvironment(),
             ownedWindowRegistry: ownedWindowRegistry,
+            consumer: .workspaceSwipe,
             hasCaptureAccess: hasCaptureAccess
         )
         capture.onPreview = { [weak self] handle, frame in
@@ -87,6 +92,11 @@ final class WorkspaceSwipePreview {
 
     isolated deinit {
         stop()
+    }
+
+    func remove(token: WindowToken) {
+        tokens = tokens.filter { $0.value != token && $0.key.token != token }
+        capture.remove(token: token)
     }
 
     func prepare(source: [Item], destination: [Item], monitor: Monitor, workingFrame: CGRect? = nil) {
@@ -110,7 +120,7 @@ final class WorkspaceSwipePreview {
         isWarming = false
         let frame = workingFrame ?? monitor.visibleFrame
         let items = (source + destination).filter { $0.frame.intersects(frame) }
-        if hasCaptureAccess() { _ = backdrop.image(for: monitor) }
+        if !backdrop.hasImage(for: monitor), hasCaptureAccess() { _ = backdrop.image(for: monitor) }
         let represented = Set(items.map(\.handle))
         for item in items where tokens[item.handle] != nil && tokens[item.handle] != item.handle.token {
             capture.remove(handle: item.handle)
@@ -134,7 +144,11 @@ final class WorkspaceSwipePreview {
     }
 
     func begin(source: [Item], destination: [Item], monitor: Monitor, workingFrame: CGRect? = nil) -> Bool {
-        guard panel == nil, hasCaptureAccess(), let wallpaperImage = backdrop.image(for: monitor) else { return false }
+        guard panel == nil, hasCaptureAccess() else { return false }
+        guard let wallpaperImage = backdrop.image(for: monitor) else {
+            backdrop.clear()
+            return false
+        }
         let frame = workingFrame ?? monitor.visibleFrame
         let source = source.filter { $0.frame.intersects(frame) }
         let destination = destination.filter { $0.frame.intersects(frame) }
@@ -156,11 +170,7 @@ final class WorkspaceSwipePreview {
         let scale = Self.scale(for: monitor)
         root.addSublayer(makeWallpaperLayer(wallpaperImage, monitor: monitor, frame: frame))
         let sourceLayer = makeWorkspaceLayer(
-            source,
-            monitor: monitor,
-            frame: frame,
-            scale: scale,
-            image: wallpaperImage
+            source, monitor: monitor, frame: frame, scale: scale, image: wallpaperImage
         )
         let destinationLayer = makeWorkspaceLayer(
             destination, monitor: monitor, frame: frame, scale: scale, image: wallpaperImage
@@ -210,6 +220,7 @@ final class WorkspaceSwipePreview {
             ownedWindowRegistry.unregister(panel)
             panel.orderOut(nil)
             panel.close()
+            backdrop.clear()
         }
         panel = nil
         sourceLayer = nil

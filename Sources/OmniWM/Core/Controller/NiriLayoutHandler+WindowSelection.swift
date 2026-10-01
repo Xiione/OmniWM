@@ -310,7 +310,7 @@ extension NiriLayoutHandler {
                 window.animateMoveFrom(
                     displacement: CGPoint(x: 0, y: -16),
                     clock: pass.engine.animationClock,
-                    config: pass.engine.windowMovementAnimationConfig,
+                    config: pass.motion.scaled(pass.engine.windowMovementAnimationConfig),
                     displayRefreshRate: state.displayRefreshRate,
                     animated: pass.motion.animationsEnabled
                 )
@@ -370,7 +370,8 @@ extension NiriLayoutHandler {
            removal.removalResult.removedColumnIndicesBefore.isEmpty,
            pass.engine.correctViewportAfterColumnRemoval(
                context: pass.interactionContext,
-               state: &state
+               state: &state,
+               preservesCenteredView: !removal.removedColumn
            )
         {
             viewportNeedsRecalc = true
