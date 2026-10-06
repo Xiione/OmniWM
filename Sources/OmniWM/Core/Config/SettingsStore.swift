@@ -25,6 +25,7 @@ final class SettingsStore {
     private var isApplyingExport = false
     private var isApplyingRuntimeState = false
     @ObservationIgnored private var lastEffectiveTrackpadAvailability: Bool?
+    @ObservationIgnored private(set) var layoutConfigurationRevision: UInt64 = 0
 
     var effectiveTrackpadGesturesEnabled: Bool {
         gestures.scrollEnabled || gestures.workspaceSwipeEnabled ||
@@ -274,16 +275,17 @@ final class SettingsStore {
         focus.onChange = { [weak self] in self?.scheduleSave() }
         pointer.onChange = { [weak self] in self?.scheduleSave() }
         monitors.onChange = { [weak self] in self?.scheduleSave() }
-        gaps.onChange = { [weak self] in self?.scheduleSave() }
+        gaps.onChange = { [weak self] in self?.layoutConfigurationDidChange() }
         niri.onChange = { [weak self] in self?.scheduleSave() }
         dwindle.onChange = { [weak self] in self?.scheduleSave() }
         gestures.onChange = { [weak self] in
             self?.notifyTrackpadAvailabilityIfChanged()
             self?.scheduleSave()
         }
-        workspaceBar.onChange = { [weak self] in self?.scheduleSave() }
+        workspaceBar.onChange = { [weak self] in self?.layoutConfigurationDidChange() }
+        workspaceBar.onNotificationBadgesChange = { [weak self] in self?.scheduleSave() }
         workspaces.onChange = { [weak self] in self?.workspacesDidChange() }
-        borders.onChange = { [weak self] in self?.scheduleSave() }
+        borders.onChange = { [weak self] in self?.layoutConfigurationDidChange() }
         overview.onChange = { [weak self] in
             self?.notifyTrackpadAvailabilityIfChanged()
             self?.scheduleSave()
@@ -364,6 +366,11 @@ final class SettingsStore {
 }
 
 extension SettingsStore {
+    private func layoutConfigurationDidChange() {
+        layoutConfigurationRevision &+= 1
+        scheduleSave()
+    }
+
     static func normalizedScratchpadLabels(_ labels: [String: String]) -> [String: String] {
         labels.reduce(into: [:]) { normalized, entry in
             guard let index = Int(entry.key.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -375,47 +382,6 @@ extension SettingsStore {
             guard !label.isEmpty else { return }
             normalized[String(index)] = label
         }
-    }
-
-    func toExport() -> SettingsExport {
-        SettingsExport(
-            hotkeysEnabled: hotkeysEnabled,
-            focus: focus.export(),
-            mouseWarp: pointer.export(),
-            routing: monitors.export(),
-            monitorRanking: monitors.ranking,
-            gaps: gaps.export(),
-            niri: niri.export(),
-            workspaceConfigurations: workspaces.configurations,
-            defaultLayoutType: workspaces.defaultLayoutType,
-            borders: borders.export(),
-            overview: overview.export(),
-            hotkeyBindings: hotkeyBindings,
-            systemHyperTrigger: systemHyperTrigger,
-            hyperKeyModifiers: hyperKeyModifiersStorage,
-            workspaceBar: workspaceBar.export(),
-            scratchpads: SettingsExport.Scratchpads(labels: scratchpadLabels),
-            monitorBarSettings: workspaceBar.monitorOverrides,
-            appRules: appRules,
-            monitorOrientationSettings: monitors.orientationOverrides,
-            monitorNiriSettings: niri.monitorOverrides,
-            dwindle: dwindle.export(),
-            monitorDwindleSettings: dwindle.monitorOverrides,
-            monitorGapSettings: gaps.monitorOverrides.filter(\.hasOverrides),
-            preventSleepEnabled: preventSleepEnabled,
-            updateChecksEnabled: updateChecksEnabled,
-            ipcEnabled: ipcEnabled,
-            gestures: gestures.export(),
-            statusBar: statusBar.export(),
-            hiddenBar: hiddenBar.export(),
-            animationsEnabled: animationsEnabled,
-            animationSpeed: animationSpeed,
-            language: language,
-            clipboard: clipboard.export(),
-            quakeTerminal: quakeTerminal.export(),
-            appearanceMode: appearanceMode,
-            tabRailAppIcons: tabRailAppIcons
-        )
     }
 
     func applyExport(_ export: SettingsExport) {
@@ -493,14 +459,6 @@ extension SettingsStore {
 }
 
 extension SettingsStore {
-    func isCommandFeatureEnabled(_ command: HotkeyCommand) -> Bool {
-        switch command {
-        case .presentation(.overview): overview.enabled
-        case .presentation(.quakeTerminal): quakeTerminal.enabled
-        default: true
-        }
-    }
-
     func resetHotkeysToDefaults() {
         hyperKeyModifiers = SettingsStore.defaultExport.hyperKeyModifiers
         hotkeyBindings = withWorkspaceNumberHotkeys(HotkeyBindingRegistry.defaults())
@@ -526,37 +484,6 @@ extension SettingsStore {
             if !isApplyingExport {
                 onWorkspaceHotkeysChanged?()
             }
-        }
-    }
-
-    func updateBinding(for commandId: String, newBinding: KeyBinding) {
-        updateTrigger(for: commandId, newTrigger: newBinding.isUnassigned ? .unassigned : .chord(newBinding))
-    }
-
-    func updateTrigger(for commandId: String, newTrigger: HotkeyTrigger) {
-        guard let index = hotkeyBindings.firstIndex(where: { $0.id == commandId }) else { return }
-        hotkeyBindings[index] = HotkeyBinding(
-            id: hotkeyBindings[index].id,
-            command: hotkeyBindings[index].command,
-            trigger: newTrigger
-        )
-    }
-
-    func clearBinding(for commandId: String) {
-        updateBinding(for: commandId, newBinding: .unassigned)
-    }
-
-    func resetBindings(for commandId: String) {
-        guard let defaultBinding = HotkeyBindingRegistry.defaultBinding(for: commandId),
-              let index = hotkeyBindings.firstIndex(where: { $0.id == commandId })
-        else { return }
-        hotkeyBindings[index] = defaultBinding
-    }
-
-    func findConflicts(for trigger: HotkeyTrigger, excluding commandId: String) -> [HotkeyBinding] {
-        hotkeyBindings.filter { hotkeyBinding in
-            hotkeyBinding.id != commandId &&
-                hotkeyBinding.binding.conflicts(with: trigger)
         }
     }
 }
