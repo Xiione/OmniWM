@@ -216,7 +216,7 @@ enum WorkspaceBarIslandSlice: Hashable {
     case secondary
 
     var showsOmniWMButton: Bool {
-        self != .secondary
+        false
     }
 
     func items(in snapshot: WorkspaceBarSnapshot) -> [WorkspaceBarItem] {

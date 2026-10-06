@@ -8,7 +8,7 @@ import XCTest
 
 @MainActor
 final class WorkspaceBarMenuButtonTests: XCTestCase {
-    func testPrimaryMenuButtonMatchesMeasurementAndDoesNotClaimWorkspacePresses() throws {
+    func testWorkspaceBarSlicesDoNotRenderOmniWMButton() {
         for orientation in [WorkspaceBarOrientation.horizontal, .vertical] {
             for slice in [WorkspaceBarIslandSlice.all, .active, .secondary] {
                 let item = WorkspaceBarItem(
@@ -33,32 +33,11 @@ final class WorkspaceBarMenuButtonTests: XCTestCase {
                 let measurement = NSHostingView(rootView: WorkspaceBarMeasurementView(snapshot: snapshot, slice: slice))
                 measurement.layoutSubtreeIfNeeded()
                 let size = measurement.fittingSize
-                let panel = WorkspaceBarPanel.defaultPanel()
-                panel.contentView = host
-                panel.setFrame(CGRect(origin: CGPoint(x: 200, y: 300), size: size), display: false)
-                defer { panel.close() }
                 host.layoutSubtreeIfNeeded()
 
                 let buttons = menuButtons(in: host)
-                XCTAssertEqual(buttons.count, slice == .secondary ? 0 : 1, "\(orientation) \(slice)")
-                guard let button = buttons.first else { continue }
-                XCTAssertEqual(button.frame.width, 24, accuracy: 0.5)
-                XCTAssertEqual(button.frame.height, 24, accuracy: 0.5)
-                let point = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-                let event = try XCTUnwrap(NSEvent.mouseEvent(
-                    with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-                    windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0
-                ))
-                XCTAssertTrue(WorkspaceBarMenuButton.contains(event, in: panel))
-                let local = host.workspaceBarLocalPoint(forWindowPoint: point)
-                XCTAssertNil(interaction.target(at: local))
-                var tracker = WorkspaceBarPressTracker()
-                XCTAssertEqual(
-                    tracker.handle(.rightDown, modifiers: [], target: interaction.target(at: local)),
-                    .passThrough
-                )
-                let screenRect = panel.convertToScreen(button.convert(button.bounds, to: nil))
-                XCTAssertTrue(panel.frame.contains(screenRect), "\(orientation) \(slice)")
+                XCTAssertTrue(buttons.isEmpty, "\(orientation) \(slice)")
+                XCTAssertEqual(size.width, host.fittingSize.width, accuracy: 0.5)
             }
         }
     }
