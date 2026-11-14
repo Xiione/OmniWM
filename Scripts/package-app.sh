@@ -4,6 +4,7 @@ set -euo pipefail
 CONFIG="${1:-release}"
 SIGN_AND_NOTARIZE="${2:-true}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SWIFT="${SWIFTLY_HOME_DIR:-$HOME/.swiftly}/bin/swift"
 APP_NAME="${OMNIWM_APP_NAME:-OmniWM}"
 BUNDLE_ID="${OMNIWM_BUNDLE_ID:-com.barut.OmniWM}"
 CANARY_TAG="${OMNIWM_CANARY_TAG:-}"
@@ -27,13 +28,13 @@ NOTARIZE_PROFILE="${OMNIWM_NOTARIZE_PROFILE:-OmniWM-Notarize}"
 ENTITLEMENTS="$ROOT_DIR/OmniWM.entitlements"
 
 echo "Running release checks..."
-make -C "$ROOT_DIR" release-check
+make -C "$ROOT_DIR" release-check CONFIG="$CONFIG"
 
 "$ROOT_DIR/Scripts/ghostty-preflight.sh" verify
 
 echo "Building OmniWM arm64 binary ($CONFIG)..."
-LIBRARY_PATH="$GHOSTTY_LIBRARY_DIR${LIBRARY_PATH:+:$LIBRARY_PATH}" swift build "${SWIFT_BUILD_ARGS[@]}"
-BUILD_DIR="$(LIBRARY_PATH="$GHOSTTY_LIBRARY_DIR${LIBRARY_PATH:+:$LIBRARY_PATH}" swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
+LIBRARY_PATH="$GHOSTTY_LIBRARY_DIR${LIBRARY_PATH:+:$LIBRARY_PATH}" "$SWIFT" build "${SWIFT_BUILD_ARGS[@]}"
+BUILD_DIR="$(LIBRARY_PATH="$GHOSTTY_LIBRARY_DIR${LIBRARY_PATH:+:$LIBRARY_PATH}" "$SWIFT" build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 EXECUTABLE="$BUILD_DIR/OmniWM"
 CLI_EXECUTABLE="$BUILD_DIR/omniwmctl"
 

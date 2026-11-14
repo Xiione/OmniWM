@@ -25,9 +25,14 @@ class PackageUpdateChannelTests(unittest.TestCase):
         (scripts / "localization.py").write_text("raise SystemExit(0)\n")
         tools = self.root / "tools"
         tools.mkdir()
-        for name in ("make", "lipo", "spctl", "syspolicy_check", "xcrun"):
+        for name in ("lipo", "spctl", "syspolicy_check", "xcrun"):
             self.command(tools / name, "exit 0\n")
-        self.command(tools / "swift", 'for arg in "$@"; do\n'
+        self.command(tools / "make", 'printf "%s\\n" "$@" > "$OMNIWM_TEST_ROOT/make-arguments"\n')
+        self.command(tools / "swift", "exit 99\n")
+        swiftly_bin = self.root / "swiftly/bin"
+        swiftly_bin.mkdir(parents=True)
+        self.command(swiftly_bin / "swift", 'printf "%s\\n" "$*" >> "$OMNIWM_TEST_ROOT/swift-arguments"\n'
+                     'for arg in "$@"; do\n'
                      '  if [[ "$arg" == --show-bin-path ]]; then printf "%s\\n" "$OMNIWM_TEST_ROOT/build"; fi\n'
                      'done\n')
         self.command(tools / "ditto", 'for output in "$@"; do :; done\ntouch "$output"\n')
@@ -49,7 +54,10 @@ class PackageUpdateChannelTests(unittest.TestCase):
             (luau / name).touch()
         with (self.root / "Info.plist").open("wb") as handle:
             plistlib.dump({"CFBundleShortVersionString": "0.7.6", "CFBundleVersion": "88"}, handle)
-        self.environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "OMNIWM_TEST_ROOT": str(self.root)}
+        self.environment = {
+            **os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "OMNIWM_TEST_ROOT": str(self.root),
+            "SWIFTLY_HOME_DIR": str(swiftly_bin.parent),
+        }
         for key in ("OMNIWM_CANARY_TAG", "OMNIWM_APP_NAME", "OMNIWM_BUNDLE_ID"):
             self.environment.pop(key, None)
 
@@ -82,6 +90,12 @@ class PackageUpdateChannelTests(unittest.TestCase):
         result = self.package()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("OMNIWMCanaryTag", self.packaged_info())
+        self.assertEqual((self.root / "make-arguments").read_text().splitlines(), [
+            "-C", str(self.root), "release-check", "CONFIG=release",
+        ])
+        self.assertEqual((self.root / "swift-arguments").read_text().splitlines(), [
+            "build -c release --arch arm64", "build -c release --arch arm64 --show-bin-path",
+        ])
 
     def test_invalid_canary_identity_stops_before_building(self):
         result = self.package("v0.7.6")

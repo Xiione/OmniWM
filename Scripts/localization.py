@@ -629,7 +629,7 @@ def localized_strings(dump):
     return tables
 
 
-def compiler_stringsdata():
+def compiler_stringsdata(configuration="debug"):
     library_dir = subprocess.run(
         [str(ROOT / "Scripts/ghostty-preflight.sh"), "print-library-dir"],
         cwd=ROOT, check=True, capture_output=True, text=True,
@@ -637,11 +637,11 @@ def compiler_stringsdata():
     environment = os.environ.copy()
     library_path = environment.get("LIBRARY_PATH")
     environment["LIBRARY_PATH"] = library_dir + (f":{library_path}" if library_path else "")
-    scratch = ROOT / ".build/localization"
+    scratch = ROOT / (".build" if configuration == "release" else ".build/localization")
     subprocess.run([
         str(swiftly_bin() / "swift"), "build",
         "--build-system", "swiftbuild", "--arch", "arm64",
-        "--configuration", "debug", "--product", "OmniWM",
+        "--configuration", configuration, "--product", "OmniWM",
         "--scratch-path", str(scratch),
     ], cwd=ROOT, check=True, env=environment)
     output = scratch / "strings"
@@ -689,9 +689,9 @@ def validate_command_defaults(stringsdata):
             raise ValueError(f"Commands.xcstrings: English {key!r} must match source value {value!r}")
 
 
-def check():
+def check(configuration="debug"):
     validate_catalogs()
-    stringsdata = compiler_stringsdata()
+    stringsdata = compiler_stringsdata(configuration)
     validate_command_defaults(stringsdata)
     with tempfile.TemporaryDirectory(prefix="omniwm-localization-") as temporary:
         directory = Path(temporary)
@@ -728,13 +728,14 @@ def main():
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--app", type=Path)
     parser.add_argument("--catalog-dir", type=Path, default=CATALOGS)
+    parser.add_argument("--configuration", choices=("debug", "release"), default="debug")
     parser.add_argument("--locales", nargs="+", metavar="LOCALE")
     args = parser.parse_args()
     try:
         if args.command == "check":
-            check()
+            check(args.configuration)
         elif args.command == "sync":
-            stringsdata = compiler_stringsdata()
+            stringsdata = compiler_stringsdata(args.configuration)
             synchronize(CATALOGS, stringsdata)
             validate_catalogs()
             validate_command_defaults(stringsdata)

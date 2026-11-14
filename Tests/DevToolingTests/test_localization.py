@@ -451,8 +451,8 @@ class CompilerMetadataTests(unittest.TestCase):
                     os.environ.pop("SWIFTLY_HOME_DIR")
                 self.assertEqual(localization.swiftly_bin(), expected)
 
-    def extraction(self, root, localized):
-        scratch = root / ".build/localization"
+    def extraction(self, root, localized, configuration="debug"):
+        scratch = root / (".build" if configuration == "release" else ".build/localization")
         source = root / "Sources/OmniWM/Sample.swift"
         files = {
             "OmniWM": [scratch / "DerivedSources/resource_bundle_accessor.swift", source],
@@ -484,7 +484,20 @@ class CompilerMetadataTests(unittest.TestCase):
         with patch.object(localization, "ROOT", root), \
                 patch.dict("os.environ", {"LIBRARY_PATH": "/existing/libraries", "SWIFTLY_HOME_DIR": "/custom swiftly"}), \
                 patch.object(localization.subprocess, "run", side_effect=run):
-            return localization.compiler_stringsdata(), calls, source
+            return localization.compiler_stringsdata(configuration), calls, source
+
+    def test_release_extraction_reuses_release_build_and_extracts_both_modules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            found, calls, source = self.extraction(root, localized=True, configuration="release")
+            self.assertEqual(calls[1], [
+                "/custom swiftly/bin/swift", "build", "--build-system", "swiftbuild", "--arch", "arm64",
+                "--configuration", "release", "--product", "OmniWM", "--scratch-path", str(root / ".build"),
+            ])
+            self.assertEqual([call[0] for call in calls[2:]], ["/toolchain/usr/bin/swiftc"] * 2)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(json.loads(found[0].read_text())["source"], str(source))
+            self.assertFalse((root / ".build/localization").exists())
 
     def test_extraction_builds_with_swiftly_then_dumps_each_module(self):
         with tempfile.TemporaryDirectory() as temporary:

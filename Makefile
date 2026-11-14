@@ -54,13 +54,13 @@ lint-fix: check-tool-versions
 
 build:
 	./Scripts/ghostty-preflight.sh verify
-	$(SWIFT_WITH_GHOSTTY) "$(SWIFT)" build --arch arm64
+	$(SWIFT_WITH_GHOSTTY) "$(SWIFT)" build $(if $(CONFIG),-c $(CONFIG),) --arch arm64
 
 localization-check: build
-	python3 Scripts/localization.py check
+	python3 Scripts/localization.py check $(if $(CONFIG),--configuration $(CONFIG),)
 
 localization-sync: build
-	python3 Scripts/localization.py sync
+	python3 Scripts/localization.py sync $(if $(CONFIG),--configuration $(CONFIG),)
 
 run: dev-install
 
