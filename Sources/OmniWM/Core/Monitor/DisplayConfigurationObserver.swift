@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
+// Copyright (C) 2026 OmniNull — https://github.com/OmniNull/OmniWM
 
 import AppKit
 import CoreGraphics
@@ -35,10 +35,17 @@ final class DisplayConfigurationObserver: NSObject {
                 object: nil
             )
         }
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(screensDidChange),
+            name: .menuBarHidingDidChange,
+            object: nil
+        )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
     }
 
     func setEventHandler(_ handler: @escaping EventHandler) {

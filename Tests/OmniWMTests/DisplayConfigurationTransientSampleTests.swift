@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2026 BarutSRB — https://github.com/OmniNull/OmniWM
+// Copyright (C) 2026 OmniNull — https://github.com/OmniNull/OmniWM
 
 import CoreGraphics
 import Foundation
@@ -82,11 +82,37 @@ final class DisplayConfigurationTransientSampleTests: XCTestCase {
             let notified = expectation(description: "Resampled after safe aperture change")
             resampled = notified
             NotificationCenter.default.post(name: .screenSafeApertureDidChange, object: nil)
-            await fulfillment(of: [notified], timeout: 5)
+            await fulfillment(of: [notified], timeout: failureBound)
         }
         observer.sampleNow()
 
         XCTAssertEqual(reconfigured, [notched, plain])
+    }
+
+    func testObserverReportsMainDisplaySwapWithUnchangedGeometry() {
+        sampledMonitors = [
+            makeMonitor(displayId: 1, name: "First", originX: 0, width: 1440, isMain: true),
+            makeMonitor(displayId: 2, name: "Second", originX: 1440, width: 1440, isMain: false)
+        ]
+        let observer = DisplayConfigurationObserver(monitorSampler: { self.sampledMonitors })
+        var reconfigured: [Monitor] = []
+        observer.setEventHandler { event in
+            guard case let .reconfigured(monitor) = event else {
+                XCTFail("Unexpected display event \(event)")
+                return
+            }
+            reconfigured.append(monitor)
+        }
+        let swapped = [
+            makeMonitor(displayId: 1, name: "First", originX: 0, width: 1440, isMain: false),
+            makeMonitor(displayId: 2, name: "Second", originX: 1440, width: 1440, isMain: true)
+        ]
+
+        sampledMonitors = swapped
+        observer.sampleNow()
+        observer.sampleNow()
+
+        XCTAssertEqual(reconfigured.sorted { $0.displayId < $1.displayId }, swapped)
     }
 
     private func makeMonitor(
@@ -94,7 +120,8 @@ final class DisplayConfigurationTransientSampleTests: XCTestCase {
         name: String,
         originX: CGFloat,
         width: CGFloat,
-        notchRange: ClosedRange<CGFloat>? = nil
+        notchRange: ClosedRange<CGFloat>? = nil,
+        isMain: Bool? = nil
     ) -> Monitor {
         let frame = CGRect(x: originX, y: 0, width: width, height: 900)
         return Monitor(
@@ -104,7 +131,8 @@ final class DisplayConfigurationTransientSampleTests: XCTestCase {
             visibleFrame: frame,
             hasNotch: notchRange != nil,
             notchRange: notchRange,
-            name: name
+            name: name,
+            isMain: isMain
         )
     }
 }
