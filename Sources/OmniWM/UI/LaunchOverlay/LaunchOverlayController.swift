@@ -11,7 +11,7 @@ final class LaunchOverlayController {
     private var didFinish = false
 
     static func shouldPlay(playedVersion: String?, currentVersion: String, animationsEnabled: Bool) -> Bool {
-        animationsEnabled && playedVersion != currentVersion
+        false
     }
 
     func play(runtimeState: RuntimeStateStore, animationsEnabled: Bool, completion: @escaping () -> Void) {

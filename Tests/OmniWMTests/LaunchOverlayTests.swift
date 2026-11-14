@@ -14,9 +14,9 @@ final class LaunchOverlayTests: XCTestCase {
         XCTAssertEqual(completions, 1)
     }
 
-    func testPlaysOncePerVersionWhileAnimationsAreEnabled() {
-        XCTAssertTrue(shouldPlay(playedVersion: nil, currentVersion: "0.7.6", animationsEnabled: true))
-        XCTAssertTrue(shouldPlay(playedVersion: "0.7.5", currentVersion: "0.7.6", animationsEnabled: true))
+    func testSkipsLaunchOverlayWhileAnimationsAreEnabled() {
+        XCTAssertFalse(shouldPlay(playedVersion: nil, currentVersion: "0.7.6", animationsEnabled: true))
+        XCTAssertFalse(shouldPlay(playedVersion: "0.7.5", currentVersion: "0.7.6", animationsEnabled: true))
         XCTAssertFalse(shouldPlay(playedVersion: "0.7.6", currentVersion: "0.7.6", animationsEnabled: true))
     }
 
