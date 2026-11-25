@@ -98,6 +98,7 @@ extension LayoutRefreshController {
         for entry in entries
             where eligibleKeys.contains(entry.token)
             && controller.workspaceManager.hiddenState(for: entry.token) != nil
+            && !entry.observedState.isNativeWithdrawn
             && windowServerInfoByWindowId[entry.windowId]?.pid == entry.pid
         {
             seenKeys.insert(entry.token)

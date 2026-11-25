@@ -9,7 +9,7 @@ final class WorkspaceSwipeMotion {
     private static let resistance = 0.55
     private static let stretch = 0.30
     private static let projectionDecay = 1000 * log(0.997)
-    private static let springConfig = SpringConfig(
+    static let springConfig = SpringConfig(
         dampingRatio: 1,
         stiffness: 1000,
         epsilon: 0.0001,
@@ -69,8 +69,7 @@ final class WorkspaceSwipeMotion {
     ) -> Bool {
         guard spring == nil, timestamp.isFinite, timestamp >= lastTimestamp,
               animationTime.isFinite else { return false }
-        tracker.push(delta: 0, timestamp: timestamp)
-        let velocity = allowFlick ? tracker.velocity() : 0
+        let velocity = allowFlick ? tracker.velocity(atRelease: timestamp) : 0
         let projected = trackedProgress - velocity / Self.projectionDecay
         let destination = allowFlick && projected >= 0.5 ? 1.0 : 0.0
         TrackpadScrollTrace.record(.workspacePresentation(
@@ -84,6 +83,19 @@ final class WorkspaceSwipeMotion {
             to: destination,
             initialVelocity: velocity,
             startTime: animationTime,
+            config: motion.scaled(Self.springConfig)
+        )
+        return true
+    }
+
+    @discardableResult
+    func animateToDestination(startTime: TimeInterval, motion: MotionSnapshot) -> Bool {
+        guard spring == nil, target == nil, startTime.isFinite else { return false }
+        target = 1
+        spring = SpringAnimation(
+            from: trackedProgress,
+            to: 1,
+            startTime: startTime,
             config: motion.scaled(Self.springConfig)
         )
         return true

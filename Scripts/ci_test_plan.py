@@ -16,7 +16,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = Path("Tests/OmniWMTests")
 SHARDS = 4
-SHELL_SUITES = {"LauncherExecutionTests", "LauncherTerminalLiveTests", "NuCompletionTests", "WorkspaceMoveIPCContractTests"}
+SHELL_SUITES = {
+    "CLICompletionSelectorTests", "CLICompletionTemplateTests", "LauncherExecutionTests", "LauncherTerminalLiveTests",
+    "NuCompletionTests", "WorkspaceMoveIPCContractTests",
+}
 SECONDS = json.loads((ROOT / "Scripts/ci-suite-seconds.json").read_text())
 DEFAULT_SECONDS = 0.1
 DECLARATION = re.compile(r"^[ \t]*(?:@\w+[ \t]+)*((?:(?:public|package|internal|open|private|fileprivate|final|nonisolated)[ \t]+)*)"
@@ -24,6 +27,7 @@ DECLARATION = re.compile(r"^[ \t]*(?:@\w+[ \t]+)*((?:(?:public|package|internal|
                          re.MULTILINE)
 TOP_LEVEL = re.compile(r"^(?:@\w+(?:\([^)\n]*\))?[ \t]+)*((?:\w+[ \t]+)*)(?:\w+\(set\)[ \t]+)?(?:func|var|let)[ \t]", re.MULTILINE)
 IDENTIFIER = re.compile(r"\b[A-Z]\w+\b")
+LIVE = re.compile(r"^#if OMNIWM_LIVE_CHECKS\b", re.MULTILINE)
 SUITE_END = re.compile(r"Test Suite '(\w+)' (?:passed|failed) at")
 EXECUTED = re.compile(r"Executed \d+ tests?, .* in ([\d.]+) \(")
 
@@ -62,7 +66,8 @@ def suites(changed, root=ROOT):
     types = {m[3] for found in declared.values() for m in found if m[2] != "extension"}
 
     def opaque(path):
-        return (any("private" not in m[1] for m in TOP_LEVEL.finditer(files[path]))
+        return (LIVE.search(files[path]) is not None
+                or any("private" not in m[1] for m in TOP_LEVEL.finditer(files[path]))
                 or any(m[2] == "extension" and m[3] not in types and "private" not in m[1] for m in declared[path]))
 
     users = {}

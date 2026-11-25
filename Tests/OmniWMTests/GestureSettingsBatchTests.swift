@@ -16,8 +16,9 @@ final class GestureSettingsBatchTests: XCTestCase {
                 var candidate = settings.gestures.export()
                 candidate.scrollEnabled = !startsWithColumns
                 candidate.windowMoveEnabled = startsWithColumns
+                candidate.windowMoveSensitivity = 1.75
                 candidate.windowGestureSensitivity = 2.5
-                candidate.resizePreviewStyle = .snapshot
+                candidate.dwindleGroupDragAcrossDisplays = .window
                 var published: [SettingsExport.Gestures] = []
                 var availability: [Bool] = []
                 let originalOnChange = settings.gestures.onChange
@@ -95,10 +96,10 @@ final class GestureSettingsBatchTests: XCTestCase {
             equivalent.windowMoveFingerCount = nil
             equivalent.windowResizeEnabled = nil
             equivalent.windowResizeFingerCount = nil
+            equivalent.windowMoveSensitivity = .nan
             equivalent.windowGestureSensitivity = .infinity
             equivalent.scrollSensitivity = .nan
             equivalent.mouseWheelSensitivity = .infinity
-            equivalent.resizePreviewStyle = nil
             gestures.apply(equivalent)
 
             XCTAssertEqual(changes, 0)

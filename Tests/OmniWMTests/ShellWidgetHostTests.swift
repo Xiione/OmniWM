@@ -700,15 +700,8 @@ final class ShellWidgetBarLifecycleTests: XCTestCase {
 
     func testHoverDrawersOpenWhenThePointerReachesTheirScreenEdge() async throws {
         executionTimeAllowance = failureBound
-        let monitors = controller.workspaceManager.monitors
-        guard let main = monitors.first(where: { $0.displayId == CGMainDisplayID() }) else {
-            throw MissingTestPrerequisite("drawers need the main display")
-        }
-        let point = CGPoint(x: main.frame.maxX - 0.5, y: main.frame.midY)
-        let edge = ShellDrawerConfig(id: "probe", edge: .right, widgets: [], hover: true)
-        guard ShellEdgeHover.touches(point, edge, main.frame, monitors.map(\.frame)) else {
-            throw MissingTestPrerequisite("the main display's right edge adjoins another display")
-        }
+        let monitor = try XCTUnwrap(controller.workspaceManager.monitors.max(by: { $0.frame.maxX < $1.frame.maxX }))
+        let point = CGPoint(x: monitor.frame.maxX - 0.5, y: monitor.frame.midY)
         let shell = controller.settings.settingsFileURL.deletingLastPathComponent().appendingPathComponent("shell")
         let widget = shell.appendingPathComponent("widgets/test", isDirectory: true)
         try Data("""
@@ -725,15 +718,15 @@ final class ShellWidgetBarLifecycleTests: XCTestCase {
         """.utf8).write(to: shell.appendingPathComponent("shell.toml"))
         let manager = makeManager()
         defer { manager.cleanup() }
-        manager.apply([barSurface(on: main)])
-        await waitForShellWidgets(manager, on: main, count: 1)
+        manager.apply([barSurface(on: monitor)])
+        await waitForShellWidgets(manager, on: monitor, count: 1)
         XCTAssertTrue(manager.needsShellEdgeMouseMoves)
 
-        manager.handleAutoHideMouseMoved(at: CGPoint(x: main.frame.midX, y: main.frame.midY))
+        manager.handleAutoHideMouseMoved(at: CGPoint(x: monitor.frame.midX, y: monitor.frame.midY))
         XCTAssertNil(manager.shellHost?.drawer)
         manager.handleAutoHideMouseMoved(at: point)
         XCTAssertEqual(manager.shellHost?.drawer?.id, "controls")
-        XCTAssertEqual(manager.shellHost?.drawer?.monitor, main.id)
+        XCTAssertEqual(manager.shellHost?.drawer?.monitor, monitor.id)
     }
 
     func testFlushDashboardDrawersStayOpenUntilThePointerLeavesThem() async throws {
@@ -1000,6 +993,52 @@ final class ShellWidgetBarLifecycleTests: XCTestCase {
         XCTAssertEqual(instance?.model.snapshot.shellWidgets.map(\.island), [.secondary])
         XCTAssertEqual(instance?.secondary?.slice, .secondary)
         XCTAssertEqual(instance?.primary.slice, .active)
+    }
+
+    func testBothIslandsOfASplitBarUnderADarkMenuBarDrawDark() async throws {
+        let previous = NSApplication.shared.appearance
+        NSApplication.shared.appearance = NSAppearance(named: .aqua)
+        defer { NSApplication.shared.appearance = previous }
+        executionTimeAllowance = failureBound
+        let shell = ShellWidgetHost.shellDirectory(in: controller.settings.settingsFileURL.deletingLastPathComponent())
+        XCTAssertTrue(try ShellProfiles.setValue(
+            "overlappingMenuBar", at: ShellProfiles.key("workspaceBar", of: "default") + ["position"], in: shell
+        ))
+        XCTAssertTrue(try ShellProfiles.setValue(
+            false, at: ShellProfiles.key("workspaceBar", of: "default") + ["fullWidth"], in: shell
+        ))
+        controller.settings.workspaceBar.notchMode = .splitActiveLeft
+        let manager = makeManager()
+        defer { manager.cleanup() }
+        manager.menuBarIsDark = true
+        let focused = WorkspaceBarItem(
+            id: WorkspaceDescriptor.ID(),
+            name: "1",
+            rawName: "1",
+            isFocused: true,
+            tiledWindows: [],
+            floatingWindows: []
+        )
+
+        manager.apply([barSurface(items: [focused])])
+        await waitForShellWidgets(manager)
+        let instance = try XCTUnwrap(manager.barsByMonitor[monitor.id])
+        let secondary = try XCTUnwrap(instance.secondary)
+        XCTAssertEqual(instance.primary.panel.appearance?.name, .darkAqua)
+        XCTAssertEqual(secondary.panel.appearance?.name, .darkAqua)
+        XCTAssertEqual(secondary.hostingView.appearance?.name, .darkAqua)
+        let host = try XCTUnwrap(manager.shellHost)
+        let islands = [WorkspaceBarIslandSlice.active, .secondary]
+        func palette(_ island: WorkspaceBarIslandSlice) -> ShellPalette {
+            host.palette(for: ShellBarKey(monitor: monitor.id, island: island))
+        }
+        XCTAssertTrue(islands.allSatisfy { palette($0) === host.resources.darkPalette })
+
+        manager.menuBarIsDark = false
+        manager.refreshMenuBarAppearance()
+        XCTAssertEqual(instance.primary.panel.appearance?.name, .aqua)
+        XCTAssertEqual(secondary.panel.appearance?.name, .aqua)
+        XCTAssertTrue(islands.allSatisfy { palette($0) === host.resources.palette })
     }
 
     private func waitForShellWidgets(_ manager: WorkspaceBarManager) async {
@@ -1553,6 +1592,55 @@ final class ShellWidgetClickTests: XCTestCase {
         XCTAssertEqual(harness.sink.commands, [.command(.workspace(.switchTo(workspaceNumber: 2)))])
     }
 
+    func testClosingPopoutAndDrawerCancelsActiveSliderOnce() async throws {
+        executionTimeAllowance = failureBound
+        let screen = try XCTUnwrap(NSScreen.screens.first { $0.displayId == CGMainDisplayID() })
+        let main = Monitor.ID(displayId: try XCTUnwrap(screen.displayId))
+        let harness = try harness("""
+        function render(ctx)
+            return ui.box{ w = 30 + (ctx.state.cancellations or 0), h = 16, onClick = ui.popout }
+        end
+        function popout(ctx)
+            return ui.slider{ w = 116, h = 16, value = 0.5, onChange = function(owner, event)
+                if event.phase == "cancelled" then
+                    owner.state.cancellations = (owner.state.cancellations or 0) + 1
+                end
+            end }
+        end
+        """, bars: [ShellBarKey(monitor: main): ShellBarData()], files: [
+            "shell.toml": """
+            profiles.default.trailing = ["test"]
+            [profiles.default.drawer.test-controls]
+            edge = "right"
+            widgets = ["test"]
+            """
+        ])
+        defer { harness.close() }
+        func width() -> CGFloat? {
+            harness.host.slots(for: main).first { $0.id == "test" }?.size.width
+        }
+        func pressSlider(in surface: ShellWidgetSurface) async throws {
+            await waitForApply(to: [surface]) {
+                !surface.layout.core.elements { $0.action & OMNI_ACTION_HANDLER != 0 }.isEmpty
+            }
+            let slider = try XCTUnwrap(surface.layout.core.elements { $0.action & OMNI_ACTION_HANDLER != 0 }.first)
+            let frame = CGRect(surface.layout.core.absoluteFrame(of: slider))
+            surface.press(at: CGPoint(x: frame.midX, y: frame.midY))
+        }
+        await harness.layoutChanges.wait { width() == 30 }
+        XCTAssertTrue(harness.host.togglePopout(of: "test", on: main))
+        try await pressSlider(in: XCTUnwrap(harness.host.popout?.surface))
+        harness.host.closePopout(animated: false)
+        await harness.layoutChanges.wait { width() == 31 }
+        XCTAssertNil(harness.host.popout)
+
+        XCTAssertTrue(harness.host.toggleDrawer("test-controls", on: main))
+        try await pressSlider(in: XCTUnwrap(harness.host.drawer?.sections.first?.surface))
+        harness.host.closeDrawer(animated: false)
+        await harness.layoutChanges.wait { width() == 32 }
+        XCTAssertNil(harness.host.drawer)
+    }
+
     func testMaterialsDrawABlurredBackdropUnderTheirTint() async throws {
         executionTimeAllowance = failureBound
         ShellWidgetSurface.reducesTransparencyOverride = false
@@ -1917,6 +2005,30 @@ final class ShellWidgetClickTests: XCTestCase {
         }
         XCTAssertEqual(harness.slot?.size.width, 42)
         XCTAssertEqual(harness.host.popout?.surface.size, CGSize(width: 70, height: 5))
+    }
+
+    func testBarLayoutChangesResizeTheWidgetsThatReadIt() async throws {
+        executionTimeAllowance = failureBound
+        let widths: [ActiveLayoutKind?: CGFloat] = [nil: 10, .niri: 20, .dwindle: 30]
+        let declared = widths.compactMap { layout, width in layout.map { "\($0.rawValue) = \(Int(width))" } }
+        let fallback = try Int(XCTUnwrap(widths[nil]))
+        let harness = try harness("""
+        local widths = { \(declared.joined(separator: ", ")) }
+        function render(ctx)
+            return ui.box{ w = widths[ctx.data.bar.layout] or \(fallback), h = 10 }
+        end
+        """)
+        defer { harness.close() }
+        var layoutChanges = harness.layoutChanges.makeAsyncIterator()
+        for layout in [ActiveLayoutKind.niri, .dwindle, nil] {
+            let width = try XCTUnwrap(widths[layout])
+            harness.sink.bars = [Harness.bar: ShellBarData(monitor: "Main", layout: layout)]
+            harness.host.updateBars()
+            while harness.slot?.size.width != width {
+                try await layoutChanges.change()
+            }
+            XCTAssertEqual(harness.host.bars[Harness.bar]?.layout, layout)
+        }
     }
 
     func testBarDataIsBuiltOnlyWhileWidgetsExist() async throws {
@@ -2470,6 +2582,118 @@ final class ShellWidgetClickTests: XCTestCase {
         surface.setVisible(false)
         XCTAssertEqual(harness.sink.previews, ["window ow_a", nil])
         XCTAssertTrue(harness.host.dropTargets(on: monitor).isEmpty)
+    }
+
+    func testACutSurfaceReportsItsVisibleFrameAndRefreshesDropGeometry() async throws {
+        executionTimeAllowance = failureBound
+        let width = 10
+        let harness = try harness("""
+        function render(ctx)
+            return ui.row{
+                ui.box{ w = \(width), h = \(width), target = "window ow_a", preview = true, drag = true },
+                ui.box{ w = \(width), h = \(width), target = "workspace 1", drop = true },
+            }
+        end
+        """)
+        defer { harness.close() }
+        var layoutChanges = harness.layoutChanges.makeAsyncIterator()
+        try await layoutChanges.change()
+        let surface = try harness.barSurface()
+        let generation = harness.host.layoutGeneration
+        XCTAssertTrue(harness.host.dropTargets(on: Harness.monitor).allSatisfy { $0.visible == nil })
+
+        surface.setVisibleBounds(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(width)))
+        XCTAssertEqual(harness.host.layoutGeneration, generation &+ 1)
+        let targets = harness.host.dropTargets(on: Harness.monitor)
+        XCTAssertEqual(targets.map(\.target), ["window ow_a"])
+        XCTAssertEqual(targets.first?.visible?.width, CGFloat(width))
+
+        surface.setVisibleBounds(nil)
+        XCTAssertEqual(harness.host.layoutGeneration, generation &+ 2)
+        XCTAssertEqual(
+            harness.host.dropTargets(on: Harness.monitor).map(\.target).sorted(),
+            ["window ow_a", "workspace 1"]
+        )
+    }
+
+    func testACutSurfacePreviewsAnchorsAndExportsOnlyItsVisiblePart() throws {
+        let width: CGFloat = 10
+        let widget = try ShellRenderedWidget(name: "cut", source: """
+        function render(ctx)
+            return ui.row{
+                ui.box{ w = \(Int(width)), h = \(Int(width)), target = "window ow_a", preview = true, drag = true },
+                ui.box{ w = \(Int(width)), h = \(Int(width)), target = "window ow_b", preview = true, drop = true },
+            }
+        end
+        """)
+        var events: [(target: String?, anchor: CGRect?)] = []
+        widget.surface.onPreview = { event in
+            events.append((event.target == 0 ? nil : widget.text.string(event.target), event.anchor?.frame))
+        }
+        widget.render(ShellBarData())
+        func widths() -> [String: CGFloat] {
+            Dictionary(uniqueKeysWithValues: widget.surface.targetFrames().map {
+                (widget.text.string($0.target), $0.frame.width)
+            })
+        }
+        let shown = width + width / 5
+        let middle = width / 2
+        widget.surface.setVisibleBounds(CGRect(x: 0, y: 0, width: shown, height: width))
+
+        widget.surface.hover(at: CGPoint(x: width + (shown - width) / 2, y: middle))
+        XCTAssertEqual(events.last?.target, "window ow_b")
+        XCTAssertEqual(events.last?.anchor?.width, shown - width)
+        XCTAssertEqual(widths(), ["window ow_a": width, "window ow_b": shown - width])
+
+        widget.surface.hover(at: CGPoint(x: width + width / 2, y: middle))
+        XCTAssertEqual(events.last?.target, nil)
+
+        widget.surface.hover(at: CGPoint(x: width + (shown - width) / 2, y: middle))
+        XCTAssertEqual(events.last?.target, "window ow_b")
+        widget.surface.setVisibleBounds(CGRect(x: 0, y: 0, width: width, height: width))
+        XCTAssertEqual(events.last?.target, nil)
+        XCTAssertEqual(widths(), ["window ow_a": width])
+
+        widget.surface.setVisibleBounds(nil)
+        XCTAssertEqual(widths(), ["window ow_a": width, "window ow_b": width])
+
+        let still = CGPoint(x: width + width / 20, y: middle)
+        let shrunk = width + width / 10
+        widget.surface.setVisibleBounds(CGRect(x: 0, y: 0, width: shown, height: width))
+        widget.surface.hover(at: still)
+        XCTAssertEqual(events.last?.anchor?.width, shown - width)
+        widget.surface.setVisibleBounds(CGRect(x: 0, y: 0, width: shrunk, height: width))
+        XCTAssertEqual(events.last?.target, "window ow_b")
+        XCTAssertEqual(events.last?.anchor?.width, shrunk - width)
+    }
+
+    func testACutSurfaceAnchorsMenusToTheVisiblePartOnly() throws {
+        let width: CGFloat = 10
+        let widget = try ShellRenderedWidget(name: "pill", source: """
+        function render(ctx)
+            return ui.row{ target = "workspace 1", menu = true,
+                ui.box{ w = \(Int(width)), h = \(Int(width)) },
+                ui.box{ w = \(Int(width)), h = \(Int(width)), target = "workspace 1" } }
+        end
+        """)
+        var menus: [(anchor: CGRect, label: CGRect?)] = []
+        widget.surface.onMenu = { menus.append(($0.anchor.frame, $0.label)) }
+        widget.render(ShellBarData())
+        let point = CGPoint(x: width / 2, y: width / 2)
+
+        XCTAssertTrue(widget.surface.openMenu(at: point))
+        XCTAssertEqual(menus.last?.anchor.width, width * 2)
+        XCTAssertEqual(menus.last?.label?.width, width)
+
+        let shown = CGRect(x: 0, y: 0, width: width, height: width)
+        widget.surface.setVisibleBounds(shown)
+        XCTAssertTrue(widget.surface.openMenu(at: point))
+        XCTAssertEqual(menus.last?.anchor.width, width)
+        XCTAssertNil(menus.last?.label)
+        XCTAssertEqual(widget.surface.shownBounds, shown)
+
+        widget.surface.setVisibleBounds(nil)
+        XCTAssertEqual(widget.surface.shownBounds, widget.surface.view.bounds)
     }
 
     func testPreviewFollowsRelayoutUnderAStillPointer() throws {
@@ -4787,5 +5011,25 @@ extension ShellWidgetClickTests {
         }
         XCTAssertEqual(harness.host.slots(for: monitor).map(\.id), ["one", "test", "two"])
         XCTAssertEqual(harness.host.slots(for: monitor).map(\.lane), [.leading, .center, .trailing])
+    }
+
+    func testBarSurfacesFollowTheFocusedWorkspace() throws {
+        func bar(focused: String) -> ShellBarData {
+            var bar = ShellBarData()
+            bar.workspaces = ["a", "b"].map { ShellBarWorkspace(id: $0, name: $0, focused: $0 == focused, windows: []) }
+            return bar
+        }
+        let harness = try harness(
+            "function render(ctx) return ui.box{ w = 10, h = 10 } end",
+            bars: [Harness.bar: bar(focused: "b")]
+        )
+        defer { harness.close() }
+        harness.host.updateBars()
+        let surface = try harness.barSurface()
+        XCTAssertEqual(surface.followedTarget, "workspace b")
+
+        harness.sink.bars = [Harness.bar: bar(focused: "a")]
+        harness.host.updateBars()
+        XCTAssertEqual(surface.followedTarget, "workspace a")
     }
 }

@@ -118,7 +118,8 @@ extension NiriLayoutHandler {
         engine: NiriLayoutEngine,
         monitor: Monitor,
         animationTime: TimeInterval?,
-        settlesAnimation: Bool
+        settlesAnimation: Bool,
+        isInteractiveMove: Bool = false
     ) -> WorkspaceLayoutPlan {
         let sampledAnimationTime = settlesAnimation ? nil : animationTime
         let isSettled = settlesAnimation || (animationTime == nil && controller.map {
@@ -138,9 +139,9 @@ extension NiriLayoutHandler {
                 engine: engine,
                 workspaceId: snapshot.workspaceId,
                 canRestoreHiddenWorkspaceWindows: snapshot.isActiveWorkspace,
-                reassertHidden: animationTime == nil || settlesAnimation,
+                reassertHidden: (animationTime == nil || settlesAnimation) && !isInteractiveMove,
                 excludedTokens: snapshot.excludedTokens,
-                pendingParkWindowIds: controller?.axManager.pendingParkWindowIdsAwaitingSkyLightMove ?? [],
+                pendingParkWindowIds: controller?.axManager.pendingParks(includingMoved: animationTime == nil) ?? [],
                 settledContext: isSettled ? (snapshot.monitor, snapshot.viewportState) : nil
             )
         )
@@ -155,9 +156,7 @@ extension NiriLayoutHandler {
         enforceOnDemandFrameSizes(&diff, animated: sampledAnimationTime != nil || isInteractiveResize)
         if animationTime != nil {
             diff.tabRailGeometryCommands = niriTabRailGeometryCommands(
-                engine: engine,
-                workspaceId: snapshot.workspaceId,
-                monitor: snapshot.monitor
+                engine: engine, workspaceId: snapshot.workspaceId, monitor: snapshot.monitor
             )
         }
 
@@ -170,6 +169,7 @@ extension NiriLayoutHandler {
             diff: diff,
             isAnimationTick: sampledAnimationTime != nil,
             isInteractiveResize: isInteractiveResize,
+            isInteractiveMove: isInteractiveMove,
             isActiveWorkspace: snapshot.isActiveWorkspace
         )
     }
@@ -184,6 +184,8 @@ extension NiriLayoutHandler {
         let pass = makeLayoutPass(snapshot: snapshot, engine: engine, monitor: monitor, motion: motion)
         let currentSelection = state.selectedNodeId
         pass.engine.setProjectionExclusions(snapshot.excludedTokens, in: pass.wsId)
+        let previousExclusions = laidOutExclusions.updateValue(snapshot.excludedTokens, forKey: pass.wsId)
+        slideAroundExclusionChanges(from: previousExclusions, pass: pass, state: &state, snapshot: snapshot)
 
         let removal = processWindowRemovals(
             pass: pass,
@@ -328,6 +330,7 @@ extension NiriLayoutHandler {
                 )
             }
         }
+        pass.engine.glideIntoStrip(visibleNewTokens, context: pass.interactionContext, state: state)
 
         return InsertionContext(
             newTokens: visibleNewTokens,

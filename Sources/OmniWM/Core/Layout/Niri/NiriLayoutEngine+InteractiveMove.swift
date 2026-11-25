@@ -9,6 +9,7 @@ extension NiriLayoutEngine {
         windowId: NodeId,
         windowToken: WindowToken,
         startLocation: CGPoint,
+        startFrame: CGRect? = nil,
         allowsInsertion: Bool = false,
         context: NiriInteractionContext,
         state: inout ViewportState
@@ -30,6 +31,8 @@ extension NiriLayoutEngine {
             windowToken: windowToken,
             workspaceId: context.workspaceId,
             startMouseLocation: startLocation,
+            startFrame: startFrame,
+            floatingFrame: startFrame,
             allowsInsertion: allowsInsertion,
             orientation: context.orientation,
             currentHoverTarget: nil
@@ -50,6 +53,7 @@ extension NiriLayoutEngine {
             animate: false,
             centerMode: settings.centerFocusedColumn,
             alwaysCenterSingleColumn: settings.alwaysCenterSingleColumn,
+            edges: viewportEdgeRules(in: context.workspaceId),
             scale: displayScale(in: context.workspaceId),
             viewFrame: monitorForWorkspace(context.workspaceId)?.frame
         )
@@ -116,17 +120,13 @@ extension NiriLayoutEngine {
                 state: &state
             )
         }
-        let inserted = insertWindowByMove(
+        return stackWindowByMoveDrop(
             sourceWindowId: move.windowId,
             targetWindowId: target.nodeId,
             position: direction.secondaryStep(for: move.orientation) == 1 ? .after : .before,
             context: context,
             state: &state
         )
-        if inserted {
-            activateWindow(move.windowId, in: move.workspaceId)
-        }
-        return inserted
     }
 
     func interactiveMoveCancel() {
@@ -199,6 +199,49 @@ extension NiriLayoutEngine {
             return false
         }
         return insertWindowInNewColumn(sourceWindow, insertIndex: insertIndex, context: context, state: &state)
+    }
+
+    private func stackWindowByMoveDrop(
+        sourceWindowId: NodeId,
+        targetWindowId: NodeId,
+        position: InsertPosition,
+        context: NiriInteractionContext,
+        state: inout ViewportState
+    ) -> Bool {
+        guard let sourceWindow = findNode(by: sourceWindowId, in: context.workspaceId) as? NiriWindow,
+              let sourceColumn = findColumn(containing: sourceWindow, in: context.workspaceId)
+        else {
+            return false
+        }
+        let (first, second) = position == .after
+            ? (targetWindowId, sourceWindowId) : (sourceWindowId, targetWindowId)
+        var previous: NodeId?
+        for member in sourceColumn.windowNodes
+            where !isExcludedFromProjection(member.token, in: context.workspaceId)
+        {
+            if member.id == second {
+                if previous == first { return false }
+                break
+            }
+            previous = member.id
+        }
+        guard insertWindowByMove(
+            sourceWindowId: sourceWindowId,
+            targetWindowId: targetWindowId,
+            position: position,
+            context: context,
+            state: &state
+        ) else {
+            return false
+        }
+        if context.orientation == .vertical {
+            sourceWindow.windowWidth = .default
+        }
+        if sourceColumn.isTabbed {
+            updateTabbedColumnVisibility(column: sourceColumn)
+        }
+        activateWindow(sourceWindowId, in: context.workspaceId)
+        return true
     }
 
     func swapWindowsByMove(
@@ -306,35 +349,62 @@ extension NiriLayoutEngine {
             return false
         }
 
-        guard let sourceColumn = findColumn(containing: sourceWindow, in: context.workspaceId),
-              let targetColumn = findColumn(containing: targetWindow, in: context.workspaceId)
+        if let sourceColumn = findColumn(containing: sourceWindow, in: context.workspaceId),
+           let targetColumn = findColumn(containing: targetWindow, in: context.workspaceId),
+           sourceColumn.id != targetColumn.id,
+           !columnCanAcceptTransfer(
+               targetColumn,
+               adding: sourceWindow,
+               in: context.workspaceId,
+               geometry: context.sizingGeometry
+           )
+        {
+            return false
+        }
+
+        guard stackWindow(
+            sourceWindow,
+            beside: targetWindow,
+            position: position,
+            in: context.workspaceId
+        ) else {
+            return false
+        }
+
+        ensureSelectionVisible(
+            node: sourceWindow,
+            context: context,
+            state: &state
+        )
+
+        return true
+    }
+
+    func stackWindow(
+        _ sourceWindow: NiriWindow,
+        beside targetWindow: NiriWindow,
+        position: InsertPosition,
+        removingEmptySource: Bool = true,
+        in workspaceId: WorkspaceDescriptor.ID
+    ) -> Bool {
+        guard let sourceColumn = findColumn(containing: sourceWindow, in: workspaceId),
+              let targetColumn = findColumn(containing: targetWindow, in: workspaceId)
         else {
             return false
         }
 
-        guard let targetIdx = targetColumn.children.firstIndex(where: { $0.id == targetWindowId }) else {
+        guard let targetIdx = targetColumn.children.firstIndex(where: { $0.id == targetWindow.id }) else {
             return false
         }
 
         let sameColumn = sourceColumn.id == targetColumn.id
         let sourceColumnWillBeEmpty = sourceColumn.children.count == 1 && !sameColumn
 
-        if !sameColumn {
-            guard columnCanAcceptTransfer(
-                targetColumn,
-                adding: sourceWindow,
-                in: context.workspaceId,
-                geometry: context.sizingGeometry
-            ) else {
-                return false
-            }
-        }
-
         sourceWindow.detach()
 
         let insertIdx: Int
         if sameColumn {
-            let currentTargetIdx = targetColumn.children.firstIndex(where: { $0.id == targetWindowId }) ?? targetIdx
+            let currentTargetIdx = targetColumn.children.firstIndex(where: { $0.id == targetWindow.id }) ?? targetIdx
             insertIdx = position == .before ? currentTargetIdx : currentTargetIdx + 1
         } else {
             insertIdx = position == .before ? targetIdx : targetIdx + 1
@@ -345,12 +415,10 @@ extension NiriLayoutEngine {
         sourceWindow.size = 1.0
         sourceWindow.height = .default
 
-        finishMoveColumns(sourceColumn, target: targetColumn, removeSource: sourceColumnWillBeEmpty)
-
-        ensureSelectionVisible(
-            node: sourceWindow,
-            context: context,
-            state: &state
+        finishMoveColumns(
+            sourceColumn,
+            target: targetColumn,
+            removeSource: removingEmptySource && sourceColumnWillBeEmpty
         )
 
         return true

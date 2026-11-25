@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import tempfile
 from ipc_wire_models import read_models
 import pathlib
@@ -192,6 +193,10 @@ def command():
     generate_argument('String')
     for (case, key, expression) in [('swapWorkspaceWithMonitor', 'direction', 'argument'), ('openCommandPaletteMode', 'mode', 'argument.rawValue')]:
         body += [f'        case let .{case}(argument):', f'            try self.argument("{key}", {expression}, &first)']
+    switcher_fields = {'direction': field('direction', 'IPCWindowSwitcherDirection'), 'scope': field('scope', 'IPCWindowSwitcherScope?')}
+    switcher_lines = ['        self.key("arguments", &first)'] + object_lines(switcher_fields, '        ', 'argumentFirst')
+    output.append('    mutating func windowSwitcherArguments(_ direction: IPCWindowSwitcherDirection, _ scope: IPCWindowSwitcherScope?, _ first: inout Bool) throws {\n' + '\n'.join(switcher_lines) + '\n    }')
+    body += ['        case let .windowSwitcher(direction, scope):', '            try windowSwitcherArguments(direction, scope, &first)']
     body += ['        case .monitorFocus, .openCommandPalette, .raiseAllFloatingWindows, .toggleFloatingFocus, .rescueOffscreenWindows, .fullscreen, .presentation, .media, .keyboardMode, .windowState, .openMenuAnywhere:', '            break', '        }', '        self.key("name", &first)', '        try self.value(value.name)', '        end(125)']
     overload('IPCCommandRequest', body)
 custom = {'IPCResult': lambda : payload_root('IPCResult'), 'IPCRequest': lambda : payload_root('IPCRequest'), 'IPCCommandRequest': command, 'WorkspaceTarget': lambda : enum_object('WorkspaceTarget', [(f'let .{case}(text)', {'kind': field(json.dumps(raw), 'String'), 'value': field('text', 'String')}) for (case, raw) in [('rawID', 'raw-id'), ('displayName', 'display-name')]]), 'IPCWindowRequest': lambda : overload('IPCWindowRequest', object_lines({'name': field('value.name', 'IPCWindowActionName'), 'windowId': field('value.windowId', 'String'), 'workspaceTarget': field('value.workspaceTarget', 'WorkspaceTarget?'), 'columnIndex': field('value.columnIndex', 'Int?'), 'direction': field('value.direction', 'IPCDirection?'), 'change': field('value.change', 'IPCSizeChange?'), 'cycle': field('value.cycle', 'IPCCycleDirection?'), 'scratchpadIndex': field('value.scratchpadIndex', 'Int?')})), 'IPCCaptureRequest': lambda : variants('IPCCaptureRequest', {'start': ('let .start(profile)', {'profile': 'profile'}), 'stop': ('.stop', {}), 'status': ('.status', {})}), 'IPCRuleApplyTarget': lambda : variants('IPCRuleApplyTarget', {'focused': ('.focused', {}), 'window': ('let .window(id)', {'windowId': 'id'}), 'pid': ('let .pid(pid)', {'pid': 'pid'})}), 'IPCRuleRequest': lambda : variants('IPCRuleRequest', {k: (f'let .{k}(' + ', '.join(fields) + ')', {f: f for f in fields}) for (k, fields) in [('add', ['rule']), ('replace', ['id', 'rule']), ('remove', ['id']), ('move', ['id', 'position']), ('apply', ['target'])]}), 'IPCWorkspaceRequest': lambda : variants('IPCWorkspaceRequest', {'focus-name': ('let .focusName(target)', {'workspaceTarget': 'target'}), 'move-to-monitor': ('let .moveToMonitor(target, direction, force)', {'workspaceTarget': 'target', 'direction': 'direction', 'force': 'force'}), 'rename': ('let .rename(target, displayName)', {'workspaceTarget': 'target', 'displayName': 'displayName'})}), 'IPCWindowMarkRequest': lambda : variants('IPCWindowMarkRequest', {k: ('.list', {}) if k == 'list' else (f'let .{k}(mark)', {'mark': 'mark'}) for k in ['set', 'list', 'focus', 'summon', 'remove']}), 'IPCShellRequest': lambda : variants('IPCShellRequest', {'set': ('let .set(key, text)', {'key': 'key', 'value': 'text'}), 'unset': ('let .unset(key)', {'key': 'key'}), 'toggle': ('let .toggle(widget)', {'widget': 'widget'}), 'profile': ('let .profile(name)', {'key': 'name'}), 'theme': ('let .theme(name, scheme)', {'key': 'name', 'value': 'scheme'}), 'eject': ('let .eject(widget)', {'widget': 'widget'}), 'init': ('let .initialize(widget)', {'widget': 'widget'}), 'trigger': ('let .trigger(widget, name, text)', {'widget': 'widget', 'key': 'name', 'value': 'text'})})}
@@ -222,7 +227,8 @@ def save_generated():
             name = f'IPCJSONWriter+Models{index:02}.swift'
             path = directory / name
             path.write_text(header + 'extension IPCJSONWriter {\n' + '\n\n'.join(functions) + '\n}\n')
-        subprocess.run([str(root / '.cache/flake-tools/bin/swiftformat'), str(directory), '--config', str(root / '.swiftformat')], cwd=root, check=True, capture_output=True)
+        tools = pathlib.Path(os.environ.get('OMNIWM_DEV_TOOLS') or root / '.cache/flake-tools')
+        subprocess.run([str(tools / 'bin/swiftformat'), str(directory), '--config', str(root / '.swiftformat')], cwd=root, check=True, capture_output=True)
         expected = {path.name: path.read_text() for path in sorted(directory.glob('*.swift'))}
     existing = {path.name: path for path in models.glob('IPCJSONWriter+Models*.swift')}
     failures = []

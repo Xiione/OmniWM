@@ -19,7 +19,7 @@ extension DwindleLayoutHandler {
             canRestoreHiddenWorkspaceWindows: snapshot.isActiveWorkspace,
             scale: snapshot.monitor.scale,
             reassertHidden: reassertHidden,
-            pendingParkWindowIds: controller?.axManager.pendingParkWindowIdsAwaitingSkyLightMove ?? [],
+            pendingParkWindowIds: controller?.axManager.pendingParks(includingMoved: animationTime == nil) ?? [],
             animationTime: animationTime
         )
     }
@@ -30,21 +30,26 @@ extension DwindleLayoutHandler {
         context: DwindleLayoutDiffContext
     ) -> WorkspaceLayoutDiff {
         var diff = WorkspaceLayoutDiff()
+        diff.frameChanges.reserveCapacity(frames.count)
         let effectiveScale = max(context.scale, 1.0)
         let excludedTokens = context.engine.excludedTokens(in: context.workspaceId)
+        let liveFloatingFrame = context.engine.liveMoveWorkspaceId == context.workspaceId
+            ? context.engine.liveTabMoveFloatingFrame : nil
+        let move = context.engine.interactiveMove
+        let floatingFrame = liveFloatingFrame ?? (move?.workspaceId == context.workspaceId ? move?.floatingFrame : nil)
+        let floatingToken = liveFloatingFrame != nil ? context.engine.liveTabMoveToken : move?.token
+        func frame(for token: WindowToken) -> CGRect? {
+            guard let target = frames[token] else { return nil }
+            guard let time = context.animationTime else { return target }
+            return context.engine.presentedFrame(for: token, in: context.workspaceId, at: time) ?? target
+        }
         for window in windows {
             let token = window.token
-            let targetFrame = frames[token]
-            let frame = if let animationTime = context.animationTime, targetFrame != nil {
-                context.engine.presentedFrame(for: token, in: context.workspaceId, at: animationTime) ?? targetFrame
-            } else {
-                targetFrame
-            }
             if window.isNativeFullscreenSuspended {
                 if let originalToken = window.nativeFullscreenOriginalToken {
                     diff.nativeFullscreenSlots[originalToken] = nativeFullscreenSlot(
                         token: token,
-                        frame: frame?.roundedToPhysicalPixels(scale: effectiveScale),
+                        frame: frame(for: token)?.roundedToPhysicalPixels(scale: effectiveScale),
                         context: context,
                         excludedTokens: excludedTokens
                     )
@@ -54,33 +59,45 @@ extension DwindleLayoutHandler {
             if excludedTokens.contains(token) {
                 continue
             }
+            if let floatingFrame, token == floatingToken {
+                if window.hiddenState != nil { diff.visibilityChanges.append(.show(token)) }
+                diff.frameChanges.append(LayoutFrameChange(
+                    token: token, frame: floatingFrame.roundedToPhysicalPixels(scale: effectiveScale), forceApply: false
+                ))
+                continue
+            }
             if appendInactiveGroupVisibility(window, windows: windows, frames: frames, context: context, diff: &diff) {
                 continue
             }
-            let previousOffscreenSide = window.hiddenState?.offscreenSide
-
-            if previousOffscreenSide != nil, frame != nil {
-                diff.visibilityChanges.append(.show(token))
-            }
-
-            if context.canRestoreHiddenWorkspaceWindows,
-               let hiddenState = window.hiddenState,
-               hiddenState.workspaceInactive
-            {
-                diff.restoreChanges.append(
-                    .init(token: token, hiddenState: hiddenState)
-                )
-            }
-            guard let frame = frame?.roundedToPhysicalPixels(scale: effectiveScale) else { continue }
-            diff.frameChanges.append(
-                LayoutFrameChange(
-                    token: token,
-                    frame: frame,
-                    forceApply: context.engine.isWindowFullscreen(token, in: context.workspaceId)
-                )
+            appendVisibleFrame(
+                frame(for: token), for: window, context: context, scale: effectiveScale, diff: &diff
             )
         }
         return diff
+    }
+
+    private func appendVisibleFrame(
+        _ frame: CGRect?,
+        for window: borrowing LayoutWindowSnapshot,
+        context: borrowing DwindleLayoutDiffContext,
+        scale: CGFloat,
+        diff: inout WorkspaceLayoutDiff
+    ) {
+        let token = window.token
+        if window.hiddenState?.offscreenSide != nil, frame != nil {
+            diff.visibilityChanges.append(.show(token))
+        }
+        if context.canRestoreHiddenWorkspaceWindows,
+           let hiddenState = window.hiddenState,
+           hiddenState.workspaceInactive
+        {
+            diff.restoreChanges.append(.init(token: token, hiddenState: hiddenState))
+        }
+        guard let frame = frame?.roundedToPhysicalPixels(scale: scale) else { return }
+        diff.frameChanges.append(LayoutFrameChange(
+            token: token, frame: frame,
+            forceApply: context.engine.isWindowFullscreen(token, in: context.workspaceId)
+        ))
     }
 
     private func nativeFullscreenSlot(

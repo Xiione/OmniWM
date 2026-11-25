@@ -44,6 +44,7 @@ import QuartzCore
     }
 
     var layoutState = LayoutRefreshState()
+    var carriedWindowDrawStamp: CarriedWindowDrawStamp?
     private var layoutBuildMetrics = LayoutBuildMetrics()
     var displayTickMetrics = DisplayTickMetrics()
     var performanceCounters: PerformanceCounters?
@@ -84,7 +85,7 @@ import QuartzCore
     private(set) lazy var niriHandler = NiriLayoutHandler(controller: controller)
     lazy var workspaceSwipe = WorkspaceSwipePresentation(refreshController: self)
     private(set) lazy var dwindleHandler = DwindleLayoutHandler(controller: controller)
-    private lazy var diffExecutor = LayoutDiffExecutor(refreshController: self)
+    private(set) lazy var diffExecutor = LayoutDiffExecutor(refreshController: self)
 
     var isDiscoveryInProgress: Bool {
         layoutState.activeFullEnumerationCount > 0
@@ -209,6 +210,10 @@ extension LayoutRefreshController {
 }
 
 extension LayoutRefreshController {
+    var isRefreshQueued: Bool {
+        layoutState.activeRefresh != nil || layoutState.pendingRefresh != nil || layoutState.pendingDebounceTask != nil
+    }
+
     func hasPendingRevealTransaction(for windowId: Int) -> Bool {
         pendingRevealTransactionsByWindowId[windowId] != nil
     }

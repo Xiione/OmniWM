@@ -22,50 +22,104 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
   cancel-in-progress: true
 
-env:
-  DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
-
 jobs:
   cache-dependencies:
     name: Cache dependencies
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     cache-mode: write
-    runs-on: xcode-27
+    runs-on: &macos-runner ${{ vars.OMNIWM_CI_RUNNER_PROVIDER == 'blacksmith' && 'blacksmith-6vcpu-macos-27' || 'xcode-27' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
       - uses: ./.github/actions/setup-swift
+        id: swift
       - uses: ./.github/actions/setup-lix
         with:
           make-target: setup
-      - name: Date sources by their last commit
-        run: python3 Scripts/restore-mtimes.py
+          save-release-downloads: true
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: build-cache
         with:
           path: .build/localization
-          key: swift-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved') }}-${{ github.sha }}
-          restore-keys: swift-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved') }}-
+          key: swift-build-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.build-environment }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Scripts/build-metadata.env') }}-${{ github.sha }}
+          restore-keys: swift-build-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.build-environment }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Scripts/build-metadata.env') }}-
+      - name: Date sources by their last commit
+        env:
+          CACHED_BUILD_KEY: ${{ steps.build-cache.outputs.cache-matched-key }}
+        run: |
+          swift package dump-package > "$RUNNER_TEMP/package.json"
+          python3 Scripts/restore-mtimes.py "$CACHED_BUILD_KEY" "$RUNNER_TEMP/package.json"
       - name: Build the app and test bundle
         run: LIBRARY_PATH="$(./Scripts/ghostty-preflight.sh print-library-dir)${LIBRARY_PATH:+:$LIBRARY_PATH}" swift build --build-tests --build-system swiftbuild --arch arm64 --scratch-path .build/localization
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .build/localization
-          key: swift-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved') }}-${{ github.sha }}
+          key: swift-build-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.build-environment }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Scripts/build-metadata.env') }}-${{ github.sha }}
   changes:
     name: Changes
-    runs-on: ubuntu-latest
+    runs-on: &linux-runner ${{ vars.OMNIWM_CI_RUNNER_PROVIDER == 'blacksmith' && 'blacksmith-2vcpu-ubuntu-2604' || 'ubuntu-latest' }}
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
       tests: ${{ steps.plan.outputs.tests }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
+      - name: Resolve source commit
+        id: source
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          sha="$EVENT_SHA"
+          if [[ -n "$PR_NUMBER" ]]; then
+            if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::pr_number must be a positive integer."
+              exit 1
+            fi
+            for attempt in 1 2 3 4 5; do
+              if ! snapshot="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '[.state, (.mergeable | tostring), .merge_commit_sha] | @tsv')"; then
+                echo "::error::Could not resolve the pull request merge commit."
+                exit 1
+              fi
+              IFS=$'\t' read -r state mergeable sha <<< "$snapshot"
+              if [[ "$state" != open ]]; then
+                echo "::error::The pull request must be open."
+                exit 1
+              fi
+              if [[ "$mergeable" == true ]]; then
+                break
+              fi
+              if [[ "$mergeable" != null ]]; then
+                echo "::error::The pull request cannot be merged with its base branch."
+                exit 1
+              fi
+              if (( attempt < 5 )); then sleep 2; fi
+            done
+            if [[ "$mergeable" != true ]]; then
+              echo "::error::GitHub is still computing mergeability. Run the workflow again once the test merge is ready."
+              exit 1
+            fi
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Source commit must be a full 40-character merge or event SHA."
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
       - name: Plan the Swift test groups
         id: plan
@@ -80,20 +134,13 @@ jobs:
           fi | python3 Scripts/ci_test_plan.py "$EVENT" >> "$GITHUB_OUTPUT"
   tooling:
     name: Tooling
-    runs-on: xcode-27
+    needs: changes
+    runs-on: *macos-runner
     timeout-minutes: 30
     steps:
-      - name: Validate requested pull request
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: |
-          if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::pr_number must be a positive integer."
-            exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.pr_number != '' && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}
+          ref: ${{ needs.changes.outputs.source-sha }}
           persist-credentials: false
       - name: Check pinned downloads
         run: make check-pins
@@ -117,36 +164,34 @@ jobs:
   verify:
     name: Verify
     needs: changes
-    runs-on: xcode-27
+    runs-on: *macos-runner
     timeout-minutes: 60
     steps:
-      - name: Validate requested pull request
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: |
-          if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::pr_number must be a positive integer."
-            exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.pr_number != '' && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}
+          ref: ${{ needs.changes.outputs.source-sha }}
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
       - uses: ./.github/actions/setup-swift
+        id: swift
       - uses: ./.github/actions/setup-lix
         with:
           make-target: setup
-      - name: Date sources by their last commit
-        if: needs.changes.outputs.tests == 'true'
-        run: python3 Scripts/restore-mtimes.py
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         if: needs.changes.outputs.tests == 'true'
+        id: build-cache
         with:
           path: .build/localization
-          key: swift-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved') }}-${{ github.sha }}
-          restore-keys: swift-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.swift-version', 'Package.resolved') }}-
+          key: swift-build-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.build-environment }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Scripts/build-metadata.env') }}-${{ github.sha }}
+          restore-keys: swift-build-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.build-environment }}-${{ hashFiles('.swift-version', 'Package.resolved', 'Scripts/build-metadata.env') }}-
+      - name: Date sources by their last commit
+        if: needs.changes.outputs.tests == 'true'
+        env:
+          CACHED_BUILD_KEY: ${{ steps.build-cache.outputs.cache-matched-key }}
+        run: |
+          swift package dump-package > "$RUNNER_TEMP/package.json"
+          python3 Scripts/restore-mtimes.py "$CACHED_BUILD_KEY" "$RUNNER_TEMP/package.json"
       - name: Put flake tools on PATH
         run: echo "$PWD/.cache/flake-tools/bin" >> "$GITHUB_PATH"
       - name: Verify package toolchain
@@ -189,24 +234,18 @@ jobs:
     name: Tests (${{ matrix.name }})
     needs: [changes, verify]
     if: ${{ !cancelled() && needs.changes.outputs.tests == 'true' && needs.verify.result == 'success' }}
-    runs-on: xcode-27
+    runs-on: *macos-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
-      - name: Validate requested pull request
-        env:
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: |
-          if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::pr_number must be a positive integer."
-            exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.pr_number != '' && format('refs/pull/{0}/merge', inputs.pr_number) || github.ref }}
+          ref: ${{ needs.changes.outputs.source-sha }}
           persist-credentials: false
+      - uses: ./.github/actions/setup-audio
+        if: vars.OMNIWM_CI_RUNNER_PROVIDER == 'blacksmith'
       - uses: ./.github/actions/setup-swift
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -227,12 +266,18 @@ jobs:
         env:
           FLAG: ${{ matrix.flag }}
           PATTERN: ${{ matrix.pattern }}
-        run: swift test --skip-build --build-system swiftbuild --arch arm64 --scratch-path .build/localization "$FLAG" "$PATTERN"
+        shell: bash
+        run: |
+          swift test --skip-build --build-system swiftbuild --arch arm64 --scratch-path .build/localization "$FLAG" "$PATTERN" 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          if grep -q "No matching test cases were run" "$RUNNER_TEMP/tests.log"; then
+            echo "::error::$FLAG $PATTERN ran no tests."
+            exit 1
+          fi
   tests:
     name: Tests
     needs: [changes, verify, test-group]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: *linux-runner
     timeout-minutes: 5
     steps:
       - name: Require every test group to pass

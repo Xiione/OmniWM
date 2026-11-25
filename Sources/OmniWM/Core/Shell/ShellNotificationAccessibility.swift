@@ -5,10 +5,17 @@ import ApplicationServices
 import Foundation
 
 actor ShellNotificationAccessibility {
-    private let queue = DispatchSerialQueue(label: "com.barut.OmniWM.shell.notification-actions", qos: .utility)
+    typealias MenuBarAccess = @MainActor @Sendable (Bool) -> Bool
+
+    private static let queue = DispatchSerialQueue(label: "com.barut.OmniWM.shell.notification-actions", qos: .utility)
+    private let menuBarAccess: MenuBarAccess
+
+    init(menuBarAccess: @escaping MenuBarAccess = { _ in false }) {
+        self.menuBarAccess = menuBarAccess
+    }
 
     nonisolated var unownedExecutor: UnownedSerialExecutor {
-        queue.asUnownedSerialExecutor()
+        Self.queue.asUnownedSerialExecutor()
     }
 
     func perform(
@@ -22,7 +29,9 @@ actor ShellNotificationAccessibility {
             fields: "trusted=\(trusted) notificationPID=\(notificationPID) menuPID=\(menuPID)"
         )
         guard trusted else { return .denied }
-        let session = Session(request: request, notificationPID: notificationPID, menuPID: menuPID)
+        let session = Session(
+            request: request, notificationPID: notificationPID, menuPID: menuPID, menuBarAccess: menuBarAccess
+        )
         return session.perform()
     }
 
@@ -34,18 +43,25 @@ actor ShellNotificationAccessibility {
     ) -> ShellNotificationActionOutcome {
         guard let first = requests.first else { return .dispatched }
         guard AXIsProcessTrusted() else { return .denied }
-        let session = Session(request: first, notificationPID: notificationPID, menuPID: menuPID)
+        let session = Session(
+            request: first, notificationPID: notificationPID, menuPID: menuPID, menuBarAccess: menuBarAccess
+        )
         return ShellNotificationDismissAll.perform(
             requests,
             begin: { session.prepare() },
             dismiss: { request in
                 session.request = request
                 session.deadline = ProcessInfo.processInfo.systemUptime + 6
-                return session.execute()
+                return session.clearBatchItem()
             },
             finish: { session.finish($0) },
             progress: progress
         )
+    }
+
+    func showCenter(notificationPID: pid_t, menuPID: pid_t) -> ShellNotificationActionOutcome {
+        guard AXIsProcessTrusted() else { return .denied }
+        return Session(notificationPID: notificationPID, menuPID: menuPID, menuBarAccess: menuBarAccess).showCenter()
     }
 }
 
@@ -54,7 +70,8 @@ extension ShellNotificationAccessibility {
         let outcome: ShellNotificationActionOutcome
     }
 
-    fileprivate struct ExpiredElement: Error {}
+    struct ExpiredElement: Error {}
+    struct CannotCompleteAXRequest: Error {}
 
     struct Snapshot {
         var historyWindow: AXUIElement?
@@ -66,19 +83,29 @@ extension ShellNotificationAccessibility {
     }
 
     final class Session {
-        var request: ShellNotificationActionRequest
+        var request: ShellNotificationActionRequest?
         let app: AXUIElement
         let menu: AXUIElement
         let notificationPID: pid_t
+        let menuBarAccess: MenuBarAccess
+        var holdsMenuBarAccess = false
+        var clearedBundles = Set<String>()
+        var unclearableStacks = Set<UUID>()
         var observer: AXObserver?
-        var openedHistory = false
+        var didDispatchHistoryOpen = false
         var openedWindow: AXUIElement?
         var deadline = ProcessInfo.processInfo.systemUptime + 6
         var stage = "initial"
 
-        init(request: ShellNotificationActionRequest, notificationPID: pid_t, menuPID: pid_t) {
+        init(
+            request: ShellNotificationActionRequest? = nil,
+            notificationPID: pid_t,
+            menuPID: pid_t,
+            menuBarAccess: @escaping MenuBarAccess = { _ in false }
+        ) {
             self.request = request
             self.notificationPID = notificationPID
+            self.menuBarAccess = menuBarAccess
             app = AXUIElementCreateApplication(notificationPID)
             menu = AXUIElementCreateApplication(menuPID)
             AXUIElementSetMessagingTimeout(app, 0.25)
@@ -86,7 +113,7 @@ extension ShellNotificationAccessibility {
         }
 
         func trace(_ event: StaticString, fields: @autoclosure () -> String = "") {
-            ShellNotificationTrace.record(event, target: request.id, fields: "stage=\(stage) \(fields())")
+            ShellNotificationTrace.record(event, target: request?.id, fields: "stage=\(stage) \(fields())")
         }
 
         func enter(_ stage: String) {
@@ -104,16 +131,9 @@ extension ShellNotificationAccessibility {
                 enter("observe")
                 try observe()
                 enter("history")
-                if try !snapshot().history {
-                    let clock = try clock()
-                    try check()
-                    let result = AXUIElementPerformAction(clock, kAXPressAction as CFString)
-                    trace("native.clock.open", fields: "ax=\(result.rawValue)")
-                    guard result == .success else {
-                        throw ActionFailure(outcome: .failed)
-                    }
-                    openedHistory = true
-                    openedWindow = try wait { $0.history }.historyWindow
+                let history = try retryAX { try snapshot(includeItems: false).history }
+                if !history {
+                    openedWindow = try openHistory()
                 }
                 return nil
             } catch let error as ActionFailure {
@@ -129,7 +149,7 @@ extension ShellNotificationAccessibility {
             do {
                 try check()
                 enter("individual")
-                switch request.operation {
+                switch try notificationRequest().operation {
                 case .dismiss:
                     return try dismiss()
                 case let .reply(text, title, sendTitle):
@@ -148,47 +168,36 @@ extension ShellNotificationAccessibility {
 
         func finish(_ result: ShellNotificationActionOutcome) -> ShellNotificationActionOutcome {
             defer {
-                if let observer {
-                    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
-                }
+                stopObserving()
+                releaseMenuBar()
             }
             var outcome = result
-            trace("native.effect.end", fields: "outcome=\(outcome.rawValue) openedHistory=\(openedHistory)")
-            if openedHistory {
+            trace("native.effect.end", fields: "outcome=\(outcome.rawValue) openedHistory=\(didDispatchHistoryOpen)")
+            if didDispatchHistoryOpen {
                 enter("restoreHistory")
-                do { try restoreHistory() }
+                do { try restoreHistory(openedWindow) }
                 catch { outcome = outcome == .dispatched ? .dispatchedPanelOpen : .failedPanelOpen }
             }
             trace("native.end", fields: "outcome=\(outcome.rawValue)")
             return outcome
         }
 
-        func restoreHistory() throws {
-            deadline = ProcessInfo.processInfo.systemUptime + 1
-            let current = try snapshot(includeItems: false, checkCancellation: false)
-            guard let window = openedWindow ?? current.historyWindow else { return }
+        func restoreHistory(_ openedWindow: AXUIElement?) throws {
+            deadline = ProcessInfo.processInfo.systemUptime + 2
+            let history = try retryAX(checkCancellation: false) {
+                try snapshot(includeItems: false, checkCancellation: false).historyWindow
+            }
+            // An opening the session dispatched may become readable only after the action timed out.
+            guard let window = openedWindow ?? history else { return }
             func containsWindow() throws -> Bool {
                 let windows = try copy(app, kAXWindowsAttribute, checkCancellation: false) as? [AXUIElement] ?? []
                 return windows.contains { CFEqual($0, window) }
             }
-            guard try containsWindow() else { return }
-            if let active = current.historyWindow, CFEqual(active, window) {
-                let clock = try clock(checkCancellation: false)
-                let result = AXUIElementPerformAction(clock, kAXPressAction as CFString)
-                trace("native.clock.close", fields: "ax=\(result.rawValue)")
-                guard result == .success else {
-                    throw ActionFailure(outcome: .failed)
-                }
+            if let history, CFEqual(history, window) {
+                try closeHistory()
             }
-            while try containsWindow() {
-                try check(false)
-                let result = CFRunLoopRunInMode(
-                    .defaultMode,
-                    max(0, deadline - ProcessInfo.processInfo.systemUptime),
-                    true
-                )
-                if result == .timedOut { throw ActionFailure(outcome: .timeout) }
-                if result == .finished { throw ActionFailure(outcome: .unavailable) }
+            try waitUntil(checkCancellation: false) {
+                try containsWindow() ? nil : ()
             }
             trace("native.history.retired")
         }
@@ -215,6 +224,12 @@ extension ShellNotificationAccessibility {
             }
         }
 
+        func stopObserving() {
+            guard let observer else { return }
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            self.observer = nil
+        }
+
         func check(_ checkCancellation: Bool = true) throws {
             if checkCancellation, Task.isCancelled { throw ActionFailure(outcome: .cancelled) }
             if ProcessInfo.processInfo.systemUptime >= deadline { throw ActionFailure(outcome: .timeout) }
@@ -232,6 +247,7 @@ extension ShellNotificationAccessibility {
             case .noValue,
                  .attributeUnsupported: return nil
             case .invalidUIElement: throw ExpiredElement()
+            case .cannotComplete: throw CannotCompleteAXRequest()
             default: throw ActionFailure(outcome: .failed)
             }
         }
@@ -265,7 +281,7 @@ extension ShellNotificationAccessibility {
                     if identifier == "widget-editor-button" { result.historyWindow = window }
                     if identifier == "AXNotificationListItems", !includeItems { return }
                     if inList {
-                        if let identifier, let id = UUID(uuidString: identifier), request.peers.contains(id) {
+                        if let identifier, let id = UUID(uuidString: identifier), request?.peers.contains(id) == true {
                             result.items[id, default: []].append(element)
                         }
                         return
@@ -284,23 +300,34 @@ extension ShellNotificationAccessibility {
             trace(
                 "native.snapshot",
                 fields: "history=\(result.history) windows=\(windows.count) visited=\(2048 - remaining)"
-                    + " peerCapsules=\(result.items.count) targetMatches=\(result.items[request.id]?.count ?? 0) includeItems=\(includeItems)"
+                    + " peerCapsules=\(result.items.count)"
+                    + " targetMatches=\(request.flatMap { result.items[$0.id]?.count } ?? 0)"
+                    + " includeItems=\(includeItems)"
             )
             return result
         }
 
         func wait(_ ready: (Snapshot) throws -> Bool) throws -> Snapshot {
-            while true {
-                try check()
+            try waitUntil {
                 let value = try snapshot()
-                if try ready(value) { return value }
-                let result = CFRunLoopRunInMode(
-                    .defaultMode,
-                    max(0, deadline - ProcessInfo.processInfo.systemUptime),
-                    true
-                )
-                trace("native.wait.wake", fields: "result=\(result.rawValue)")
-                if result == .timedOut { throw ActionFailure(outcome: .timeout) }
+                return try ready(value) ? value : nil
+            }
+        }
+
+        func retryAX<Value>(checkCancellation: Bool = true, _ read: () throws -> Value) throws -> Value {
+            try waitUntil(checkCancellation: checkCancellation) { try read() }
+        }
+
+        func waitUntil<Value>(checkCancellation: Bool = true, _ read: () throws -> Value?) throws -> Value {
+            while true {
+                try check(checkCancellation)
+                do {
+                    if let value = try read() { return value }
+                } catch is CannotCompleteAXRequest {
+                    // Notification Center may briefly stop answering AX while its window animates.
+                }
+                let interval = min(0.05, max(0, deadline - ProcessInfo.processInfo.systemUptime))
+                let result = CFRunLoopRunInMode(.defaultMode, interval, true)
                 if result == .finished { throw ActionFailure(outcome: .unavailable) }
             }
         }
@@ -356,7 +383,7 @@ extension ShellNotificationAccessibility.Session {
 
     func exactTarget() throws -> AXUIElement {
         let current = try snapshot()
-        guard let matches = current.items[request.id]
+        guard let matches = try current.items[notificationRequest().id]
         else { throw ShellNotificationAccessibility.ActionFailure(outcome: .notFound) }
         guard matches.count == 1 else { throw ShellNotificationAccessibility.ActionFailure(outcome: .ambiguous) }
         guard try string(matches[0], kAXSubroleAttribute) == "AXNotificationCenterBanner" else {
@@ -426,7 +453,7 @@ extension ShellNotificationAccessibility.Session {
         var send: AXUIElement?
         enter("composer")
         _ = try wait { value in
-            guard let matches = value.items[self.request.id], matches.count == 1 else { return false }
+            guard let matches = try value.items[self.notificationRequest().id], matches.count == 1 else { return false }
             let fields = try self.controls(matches[0], role: kAXTextAreaRole)
             let sends = try self.controls(matches[0], role: kAXButtonRole, title: sendTitle)
             self.trace("native.composer.controls", fields: "fields=\(fields.count) sends=\(sends.count)")

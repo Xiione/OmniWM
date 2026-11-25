@@ -65,15 +65,14 @@ extension NiriLayoutHandler {
         let columnAnimationsRunning = engine.tickAllColumnAnimations(in: wsId, at: targetTime)
         let viewportTick = controller.workspaceManager.animationDriver.tickResult(in: wsId, at: targetTime)
         applyExpiredViewportGesture(viewportTick, workspaceId: wsId, controller: controller)
+        controller.mouseEventHandler.handleLiveEdgeScrollTick(in: wsId, at: targetTime)
         let viewportMotionRunning = viewportTick.isRunning
+            || controller.workspaceManager.animationDriver.hasEdgeScroll(in: wsId)
         let animsMs = scrollTrace ? (CACurrentMediaTime() - animsStart) * 1000 : 0
         let state = controller.workspaceManager.niriViewportState(for: wsId)
         let animationsOngoing = viewportMotionRunning
             || windowAnimationsRunning
             || columnAnimationsRunning
-        if !animationsOngoing {
-            controller.resizeOverlay.settleOnLayout(in: wsId)
-        }
 
         let didApplyFrames = applyFramesOnDemand(
             wsId: wsId,
@@ -98,6 +97,7 @@ extension NiriLayoutHandler {
                 activeWorkspaceIds: activeWorkspaceIds(controller: controller)
             )
             controller.layoutRefreshController.stopScrollAnimation(for: displayId)
+            controller.mouseEventHandler.handleNiriAnimationsSettled(in: wsId)
         }
     }
 
@@ -119,7 +119,9 @@ extension NiriLayoutHandler {
         monitor: Monitor,
         animationTime: TimeInterval? = nil,
         settlesAnimation: Bool = false,
-        animsMs: Double = 0
+        animsMs: Double = 0,
+        isInteractiveMove: Bool = false,
+        requiringSettledFrameFor carried: WindowToken? = nil
     ) -> Bool {
         guard let controller,
               let activeWorkspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
@@ -145,11 +147,8 @@ extension NiriLayoutHandler {
 
         let buildStart = CACurrentMediaTime()
         let plan = buildOnDemandLayoutPlan(
-            snapshot: snapshot,
-            engine: engine,
-            monitor: monitor,
-            animationTime: animationTime,
-            settlesAnimation: settlesAnimation
+            snapshot: snapshot, engine: engine, monitor: monitor,
+            animationTime: animationTime, settlesAnimation: settlesAnimation, isInteractiveMove: isInteractiveMove
         )
         let buildSeconds = CACurrentMediaTime() - buildStart
         controller.layoutRefreshController.recordScrollBuild(
@@ -173,7 +172,8 @@ extension NiriLayoutHandler {
                 )
             )
         }
-        return applied
+        guard applied, let carried else { return applied }
+        return LayoutDiffExecutor.isFrameOnly(plan.diff) && plan.diff.frameChanges.contains { $0.token == carried }
     }
 
     private struct ScrollTickSpans {
@@ -267,6 +267,7 @@ extension NiriLayoutHandler {
         terminateViewportGesture(for: workspaceId, disposition: gestureDisposition)
         driver.removeMotions(for: [workspaceId])
         let hadEngineAnimations = engine?.cancelAnimations(in: workspaceId) == true
+        controller.mouseEventHandler.finishInterruptedLiveStackDrop(in: workspaceId)
         return hadViewportMotion || hadEngineAnimations
     }
 

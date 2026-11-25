@@ -50,7 +50,6 @@ final class AXManager {
     private var pendingFrameRetryRequestsByWindowId: [Int: AXFrameRetryRequest] = [:]
     private var nextFrameRetryGeneration: UInt64 = 1
     private var nativeTitleBarDrag: (token: WindowToken, excludedFrameWrite: Bool)?
-    /// Window IDs belonging to inactive workspaces — checked LIVE in applyFramesParallel.
     private(set) var inactiveWorkspaceWindowIds: Set<Int> = []
     private(set) var macOSHiddenAppPIDs: Set<pid_t> = []
 
@@ -64,6 +63,10 @@ final class AXManager {
 
     var pendingParkWindowIdsAwaitingSkyLightMove: Set<Int> {
         parkLedger.pendingParkWindowIds.filter { skyLightLivePositionByWindowId[$0] == nil }
+    }
+
+    func pendingParks(includingMoved: Bool) -> Set<Int> {
+        includingMoved ? pendingParkWindowIds : pendingParkWindowIdsAwaitingSkyLightMove
     }
 
     func prepareParkFrameApplications(_ frames: [AXFrameApplicationTarget]) -> [AXFrameApplicationRequest] {
@@ -351,6 +354,10 @@ final class AXManager {
 extension AXManager {
     func isAwaitingFrameWrite(_ windowId: Int) -> Bool {
         frameLedger.hasPendingFrameWrite(for: windowId) || pendingFrameRetryRequestsByWindowId[windowId] != nil
+    }
+
+    func awaitedFrameWrite(for windowId: Int) -> CGRect? {
+        frameLedger.pendingFrameWrite(for: windowId) ?? pendingFrameRetryRequestsByWindowId[windowId]?.frame
     }
 
     func hasPendingFrameSizeChange(for windowId: Int, comparedTo size: CGSize) -> Bool {

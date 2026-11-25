@@ -48,7 +48,11 @@ The result must report the Swift 6.5 development snapshot named in `.swift-versi
 make setup
 ```
 
-Setup needs [Lix](https://lix.systems/install/) (or another Nix with flakes). It builds the repository's `flake.nix`: the pinned, prebuilt GhosttyKit is linked at `Frameworks/GhosttyKit.xcframework` and checked against its checksum, and the pinned SwiftFormat, SwiftLint, Python, Fish and Nushell are linked at `.cache/flake-tools`. **You do not need to compile GhosttyKit**, and no Homebrew installation is required. `nix develop` opens a shell with the same tools on `PATH`. With [direnv](https://direnv.net), `direnv allow` loads that shell whenever you enter the checkout.
+Setup needs [Lix](https://lix.systems/install/) (or another Nix with flakes). It builds the repository's `flake.nix`: the pinned, prebuilt GhosttyKit is linked at `Frameworks/GhosttyKit.xcframework` and checked against its checksum, and the pinned SwiftFormat, SwiftLint, Python, Fish and Nushell are linked at `.cache/flake-tools`. **You do not need to compile GhosttyKit**, and no Homebrew installation is required.
+
+`nix develop` opens a shell with the pinned tools on `PATH`. With [direnv](https://direnv.net) configured for your shell, run `direnv allow` to load the same environment whenever you enter the checkout. The shell also supplies the pinned tools to `make format-check`, `make lint` and the Git hook. Put checkout-specific environment variables such as `OMNIWM_RELEASE_APP` in an optional `.env.local` file using `NAME=value` syntax. Git ignores this file.
+
+Run `make hooks` once to enable the pre-commit hook. If you work outside the Nix shell, `make setup-tools` installs the tools for the hook and the formatting and lint commands.
 
 Tool versions and download checksums are recorded in [Scripts/dev-tools.env](https://github.com/OmniNull/OmniWM/blob/main/Scripts/dev-tools.env), which the flake reads; other packages are pinned by `flake.lock`. Ghostty's internal archive pin remains in [Scripts/build-metadata.env](https://github.com/OmniNull/OmniWM/blob/main/Scripts/build-metadata.env). Setup preserves an existing framework that does not match the pin and explains the mismatch instead of overwriting it. Setup does not launch OmniWM or change privacy permissions, login items, or CLI links.
 
@@ -89,7 +93,7 @@ Commit your change, push your branch to your fork, and open a pull request targe
 | --- | --- |
 | `make setup` | Check prerequisites and obtain the pinned dependencies. |
 | `make doctor` | Diagnose tools, dependencies, signing, and app paths without changing them. |
-| `make hooks` | Enable the pre-commit hook: SwiftFormat and SwiftLint on staged Swift files, and a warning when a pinned download in `Scripts/dev-tools.env` is not public yet. |
+| `make hooks` | Enable staged checks for whitespace errors, conflict markers, Swift formatting and lint, and stale IPC encoders. Unpublished pinned downloads produce a warning. |
 | `make build` | Build the app without installing or launching it. |
 | `make run` | Build, sign, install, and switch to Dev; alias for `make dev-install`. |
 | `make use-dev` | Switch to the installed Dev app without rebuilding. |
@@ -227,7 +231,7 @@ Local releases via `Scripts/omniwm_release.py` use your own keychain and notariz
 
 For canaries, configure **canary-signing** with no required reviewers and a selected-branches deployment policy allowing only `main`.
 
-The daily **OmniWM canary** workflow skips a build when the checked-out commit is already contained in a stable or canary tag, or when only documentation changed since the newest ancestor tag. For this check, documentation means root-level `.md` files and everything under `docs/` or `website/`; Markdown elsewhere, including bundled issue-report prompts under `Sources/`, still counts as an app change. Documentation-only commits are also omitted from canary release notes. The manual `force` option bypasses both skip checks.
+The daily **OmniWM canary** workflow skips a build when the checked-out commit is already contained in a stable or canary tag, or when only documentation changed since the newest ancestor tag. For this check, documentation means root-level `.md` files and everything under `docs/` or `website/`; Markdown elsewhere still counts as an app change. Documentation-only commits are also omitted from canary release notes. The manual `force` option bypasses both skip checks.
 
 When a build is needed, the workflow requires the latest **OmniWM CI** push run on `main` to pass, including both **Verify** and **Tests**. It starts from the actual checkout rather than the scheduled event's commit, before dependency setup or importing Apple credentials. Documentation-only pushes don't start CI, so it uses the newest commit that has a run, looking from the checked-out commit down through documentation-only commits to the first app commit. A failed or unfinished run there, or no run at all, stops the canary; wait for CI to pass and rerun the workflow. The manual `force` option cannot bypass CI.
 
@@ -235,20 +239,18 @@ When a build is needed, the workflow requires the latest **OmniWM CI** push run 
 
 The **Main branch protection** ruleset blocks branch deletion and force-pushes. Keep those protections and do not grant GitHub Actions an **Always** bypass. The release workflow uses a normal fast-forward push and rejects additional blocking rules before publication, even when its token could bypass them. Required checks or pull-request-only updates need a release flow that publishes an already-reviewed version commit; do not bypass those rules to keep the current flow working.
 
-Re-enable **OmniWM CI** and confirm **Verify** and **Tests** on hosted runners. For an existing PR, use **Actions → OmniWM CI → Run workflow** and enter its PR number to test its merge with the base branch. A manual run provides logs; it does not replace the PR's required check. Updating the PR branch triggers its normal PR checks. Approve first-time fork runs when needed.
+**OmniWM CI** (`ci.yml`) runs automatically on pull requests and pushes to `main` or branches ending in `-release`, except documentation-only changes. **Website** (`website.yml`) checks website changes on pull requests and pushes to `main`. Neither workflow requires a custom review approval. GitHub may still require approval for first-time fork runs.
+
+The **Main approval with BarutSRB-only bypass** and **Owner or three maintainers on other branches** rulesets require pull request approval. The **CI approval** status check has been removed from both rulesets.
+
+For an open, mergeable PR, use **Actions → OmniWM CI → Run workflow** and enter its PR number. All test groups run against the same resolved merge commit. Updating the PR branch triggers its normal PR checks.
 
 ## Trace Files
 
 Include a trace file when useful, especially for bug reports. Open **Settings → Troubleshooting**, click **Start Recording**, reproduce the bug, then click **Stop & Save Recording** and attach the saved `.log` file.
 
-**Report a Bug…** in the status-bar menu opens the in-app report form. Recording or selecting trace and crash evidence is optional; on submit OmniWM prepares a fresh diagnostic `.log` with whatever you selected, reveals it for attaching, and opens a pre-filled GitHub issue.
-
 Before attaching a diagnostic, review it: the file can contain OmniWM settings, application and window titles, and title-based App Rule matchers.
 
 With IPC enabled, captures can also be scripted using the CLI: `capture start trace`, `capture stop`, and `capture status`.
-
-## Improving the Issue-Report Prompt
-
-The prompt that rewrites bug reports into GitHub issues lives in plain Markdown. See [docs/issue-report-prompt.md](https://github.com/OmniNull/OmniWM/blob/main/docs/issue-report-prompt.md) for the files, constraints, and verification steps.
 
 If you are unsure about something, open an issue or ask in your pull request. Questions and early feedback are welcome.

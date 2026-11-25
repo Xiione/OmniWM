@@ -6,6 +6,15 @@ import Foundation
 import OmniWMIPC
 
 extension WMController {
+    func handleWindowSwitcherAction(_ action: WindowSwitcherAction, generation: UInt64) {
+        if case .begin = action {
+            guard settings.windowSwitcher.enabled else { return }
+            windowSwitcherController.handle(action, generation: generation)
+        } else {
+            windowSwitcherControllerStorage?.handle(action, generation: generation)
+        }
+    }
+
     func updateWindowSwitcherSettings() {
         hotkeys.configureWindowSwitcher(settings.windowSwitcher.export())
         refreshHotkeyFailureSnapshots()
@@ -65,10 +74,6 @@ extension WMController {
             ),
             visibleFrame: monitor.visibleFrame
         )
-    }
-
-    func setHiddenBarEnabled(_ enabled: Bool) {
-        hiddenBarController.setEnabled(enabled)
     }
 
     func updateHiddenBarSettings() {
